@@ -46,7 +46,15 @@ function startStatusStream() {
       } else if (stderr) {
         io.emit('slots', `[ERROR] ${stderr}`);
       } else {
-        io.emit('slots', stdout);
+        try {
+          // Try to parse JSON and format it nicely
+          const parsed = JSON.parse(stdout);
+          const formatted = JSON.stringify(parsed, null, 2);
+          io.emit('slots', formatted);
+        } catch (e) {
+          // If it's not valid JSON, send as-is
+          io.emit('slots', stdout);
+        }
       }
     });
   }
@@ -59,7 +67,15 @@ function startStatusStream() {
       } else if (stderr) {
         io.emit('health', `[ERROR] ${stderr}`);
       } else {
-        io.emit('health', stdout);
+        try {
+          // Try to parse JSON and format it nicely
+          const parsed = JSON.parse(stdout);
+          const formatted = JSON.stringify(parsed, null, 2);
+          io.emit('health', formatted);
+        } catch (e) {
+          // If it's not valid JSON, send as-is
+          io.emit('health', stdout);
+        }
       }
     });
   }
@@ -80,7 +96,7 @@ startLogStream();
 // Start the status stream
 startStatusStream();
 
-// Start the server on fixed port 6000
+// Start the server on fixed port 4000
 const PORT = 4000;
 
 server.listen(PORT, () => {
