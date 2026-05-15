@@ -1,0 +1,23 @@
+{
+  "name": "llama-log-viewer",
+  "version": "1.0.0",
+  "description": "Real-time log viewer for LLaMA server",
+  "main": "log-viewer.js",
+  "scripts": {
+    "start": "node log-viewer.js",
+    "dev": "nodemon log-viewer.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2",
+    "open": "^8.4.2"
+  },
+  "keywords": [
+    "llama",
+    "logs",
+    "viewer",
+    "realtime"
+  ],
+  "author": "Claude Code",
+  "license": "MIT"
+}

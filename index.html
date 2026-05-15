@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLaMA Server Logs & Status</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            margin: 0;
+            padding: 20px;
+            background-color: #1a1a1a;
+            color: #00ff00;
+            overflow: hidden;
+        }
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid #00ff00;
+            margin-bottom: 20px;
+        }
+        .tab {
+            padding: 10px 20px;
+            cursor: pointer;
+            background-color: #002200;
+            border: 1px solid #00ff00;
+            border-bottom: none;
+            margin-right: 5px;
+            border-radius: 5px 5px 0 0;
+        }
+        .tab.active {
+            background-color: #004400;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        #log-container {
+            height: 50vh;
+            overflow-y: auto;
+            border: 1px solid #00ff00;
+            padding: 10px;
+            background-color: #000;
+            font-size: 14px;
+            line-height: 1.4;
+        }
+        #slots-container, #health-container {
+            height: 50vh;
+            overflow-y: auto;
+            border: 1px solid #00ff00;
+            padding: 10px;
+            background-color: #000;
+            font-size: 14px;
+            line-height: 1.4;
+            white-space: pre-wrap;
+        }
+        .log-line {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .error {
+            color: #ff0000;
+        }
+        .info {
+            color: #00ffff;
+        }
+        .title {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #00ff00;
+            text-decoration: underline;
+        }
+        .status {
+            text-align: center;
+            margin-bottom: 10px;
+            color: #00ff00;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 10px;
+            color: #00ff00;
+            font-size: 12px;
+        }
+        .refresh-info {
+            text-align: center;
+            margin-top: 10px;
+            color: #00ff00;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="title">
+        <h1>LLaMA Server Logs & Status</h1>
+    </div>
+    <div class="status">
+        <p>Watching: journalctl --user -u llama-server -f</p>
+        <p>Connected to service: <span id="service-status">Checking...</span></p>
+    </div>
+
+    <div class="tabs">
+        <div class="tab active" onclick="switchTab('logs')">Logs</div>
+        <div class="tab" onclick="switchTab('slots')">Slots</div>
+        <div class="tab" onclick="switchTab('health')">Health</div>
+    </div>
+
+    <div id="logs" class="tab-content active">
+        <div id="log-container"></div>
+    </div>
+
+    <div id="slots" class="tab-content">
+        <div id="slots-container"></div>
+    </div>
+
+    <div id="health" class="tab-content">
+        <div id="health-container"></div>
+    </div>
+
+    <div class="refresh-info">
+        <p>Slots and Health data refresh every 5 seconds</p>
+    </div>
+    <div class="footer">
+        <p>Logs auto-scrolling. Refresh page if connection is lost.</p>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const logContainer = document.getElementById('log-container');
+        const slotsContainer = document.getElementById('slots-container');
+        const healthContainer = document.getElementById('health-container');
+        const serviceStatus = document.getElementById('service-status');
+
+        // Tab switching functionality
+        function switchTab(tabName) {
+            // Hide all tab contents
+            const tabContents = document.querySelectorAll('.tab-content');
+            tabContents.forEach(content => content.classList.remove('active'));
+
+            // Remove active class from all tabs
+            const tabs = document.querySelectorAll('.tab');
+            tabs.forEach(tab => tab.classList.remove('active'));
+
+            // Show selected tab content
+            document.getElementById(tabName).classList.add('active');
+
+            // Add active class to clicked tab
+            event.target.classList.add('active');
+        }
+
+        socket.on('connect', function() {
+            serviceStatus.textContent = 'Connected';
+            serviceStatus.style.color = '#00ff00';
+        });
+
+        socket.on('disconnect', function() {
+            serviceStatus.textContent = 'Disconnected';
+            serviceStatus.style.color = '#ff0000';
+        });
+
+        socket.on('log', function(data) {
+            const logLine = document.createElement('div');
+            logLine.className = 'log-line';
+
+            // Add timestamp
+            const timestamp = new Date().toLocaleTimeString();
+            logLine.innerHTML = `[${timestamp}] ${data}`;
+
+            // Apply color coding based on log content
+            if (data.includes('[ERROR]')) {
+                logLine.classList.add('error');
+            } else if (data.includes('[INFO]')) {
+                logLine.classList.add('info');
+            }
+
+            logContainer.appendChild(logLine);
+
+            // Auto-scroll to bottom
+            logContainer.scrollTop = logContainer.scrollHeight;
+        });
+
+        socket.on('slots', function(data) {
+            slotsContainer.textContent = data;
+            // Auto-scroll to bottom
+            slotsContainer.scrollTop = slotsContainer.scrollHeight;
+        });
+
+        socket.on('health', function(data) {
+            healthContainer.textContent = data;
+            // Auto-scroll to bottom
+            healthContainer.scrollTop = healthContainer.scrollHeight;
+        });
+    </script>
+</body>
+</html>
