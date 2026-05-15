@@ -36,27 +36,48 @@ function startLogStream() {
   });
 }
 
-// Function to parse and format slots data
+// Function to parse and format slots data with detailed log format
 function formatSlotsData(rawData) {
   try {
     const parsed = JSON.parse(rawData);
     let formatted = '';
 
-    // Handle different slot structures
-    if (parsed.slots && Array.isArray(parsed.slots)) {
-      formatted += `Slots Status:\n`;
-      formatted += `Total Slots: ${parsed.slots.length}\n`;
-      formatted += `----------------------------------------\n`;
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      formatted += `📊 SLOT STATUS REPORT 📊\n`;
+      formatted += `==========================\n`;
+      formatted += `Total Slots: ${parsed.length}\n\n`;
 
-      parsed.slots.forEach((slot, index) => {
-        formatted += `Slot ${index + 1}:\n`;
-        Object.keys(slot).forEach(key => {
-          formatted += `  ${key}: ${slot[key]}\n`;
-        });
-        formatted += `\n`;
+      parsed.forEach((slot, index) => {
+        formatted += `📋 SLOT ${index + 1}:\n`;
+        formatted += `==================\n`;
+        formatted += `ID: ${slot.id}\n`;
+        formatted += `Context Size: ${slot.n_ctx.toLocaleString()} tokens\n`;
+        formatted += `Speculative: ${slot.speculative ? '✅ ON' : '❌ OFF'}\n`;
+        formatted += `Processing: ${slot.is_processing ? '🔄 ACTIVE' : '✅ IDLE'}\n`;
+        formatted += `Task ID: ${slot.id_task}\n\n`;
+
+        // Key parameters
+        formatted += `🔧 PARAMETERS:\n`;
+        formatted += `--------------\n`;
+        formatted += `Temperature: ${slot.params.temperature}\n`;
+        formatted += `Top-K: ${slot.params.top_k}\n`;
+        formatted += `Top-P: ${slot.params.top_p}\n`;
+        formatted += `Max Tokens: ${slot.params.max_tokens.toLocaleString()}\n`;
+        formatted += `N Predict: ${slot.params.n_predict.toLocaleString()}\n`;
+        formatted += `Chat Format: ${slot.params.chat_format}\n\n`;
+
+        // Next token status
+        formatted += `🚀 NEXT TOKEN STATUS:\n`;
+        formatted += `---------------------\n`;
+        if (slot.next_token && slot.next_token.length > 0) {
+          formatted += `Has Next Token: ${slot.next_token[0].has_next_token ? '✅ YES' : '❌ NO'}\n`;
+          formatted += `Tokens Remaining: ${slot.next_token[0].n_remain.toLocaleString()}\n`;
+          formatted += `Tokens Decoded: ${slot.next_token[0].n_decoded}\n`;
+        } else {
+          formatted += `No next token info available\n`;
+        }
+        formatted += `\n────────────────────────────────\n\n`;
       });
-    } else if (parsed.status) {
-      formatted += `Status: ${parsed.status}\n`;
     } else {
       // Fallback to basic JSON formatting
       formatted = JSON.stringify(parsed, null, 2);
@@ -68,15 +89,18 @@ function formatSlotsData(rawData) {
   }
 }
 
-// Function to parse and format health data
+// Function to parse and format health data with detailed log format
 function formatHealthData(rawData) {
   try {
     const parsed = JSON.parse(rawData);
     let formatted = '';
 
-    // Handle health structure
+    // Handle health structure with detailed formatting
+    formatted += `🏥 SERVER HEALTH REPORT 🏥\n`;
+    formatted += `==========================\n`;
+
     if (parsed.status) {
-      formatted += `Health Status: ${parsed.status}\n`;
+      formatted += `Status: ${parsed.status.toUpperCase()}\n`;
     }
 
     if (parsed.uptime) {
@@ -84,31 +108,41 @@ function formatHealthData(rawData) {
     }
 
     if (parsed.memory) {
-      formatted += `Memory:\n`;
+      formatted += `\n💾 MEMORY USAGE:\n`;
+      formatted += `-----------------\n`;
       Object.keys(parsed.memory).forEach(key => {
-        formatted += `  ${key}: ${parsed.memory[key]}\n`;
+        formatted += `${key}: ${parsed.memory[key]}\n`;
       });
     }
 
     if (parsed.gpu) {
-      formatted += `GPU:\n`;
+      formatted += `\n🖥️  GPU INFORMATION:\n`;
+      formatted += `-------------------\n`;
       Object.keys(parsed.gpu).forEach(key => {
-        formatted += `  ${key}: ${parsed.gpu[key]}\n`;
+        formatted += `${key}: ${parsed.gpu[key]}\n`;
       });
     }
 
     if (parsed.model) {
-      formatted += `Model Info:\n`;
+      formatted += `\n🤖 MODEL INFORMATION:\n`;
+      formatted += `---------------------\n`;
       Object.keys(parsed.model).forEach(key => {
-        formatted += `  ${key}: ${parsed.model[key]}\n`;
+        formatted += `${key}: ${parsed.model[key]}\n`;
       });
     }
 
     if (parsed.system) {
-      formatted += `System Info:\n`;
+      formatted += `\n💻 SYSTEM INFORMATION:\n`;
+      formatted += `----------------------\n`;
       Object.keys(parsed.system).forEach(key => {
-        formatted += `  ${key}: ${parsed.system[key]}\n`;
+        formatted += `${key}: ${parsed.system[key]}\n`;
       });
+    }
+
+    if (parsed.version) {
+      formatted += `\n🔢 VERSION:\n`;
+      formatted += `------------\n`;
+      formatted += `Version: ${parsed.version}\n`;
     }
 
     if (Object.keys(parsed).length === 0) {
