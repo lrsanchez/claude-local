@@ -59,11 +59,30 @@
             white-space: pre-wrap;
             word-wrap: break-word;
         }
-        .error {
-            color: #ff0000;
+        /* Enhanced terminal-like colors for logs */
+        .log-line.info {
+            color: #00ffff; /* Cyan for info messages */
         }
-        .info {
-            color: #00ffff;
+        .log-line.error {
+            color: #ff0000; /* Red for error messages */
+        }
+        .log-line.warning {
+            color: #ffff00; /* Yellow for warning messages */
+        }
+        .log-line.debug {
+            color: #808080; /* Gray for debug messages */
+        }
+        .log-line.success {
+            color: #00ff00; /* Green for success messages */
+        }
+        .log-line.timestamp {
+            color: #808080; /* Gray for timestamps */
+        }
+        .log-line.system {
+            color: #0080ff; /* Blue for system messages */
+        }
+        .log-line.user {
+            color: #ff8000; /* Orange for user messages */
         }
         .title {
             text-align: center;
@@ -168,10 +187,20 @@
             logLine.innerHTML = `[${timestamp}] ${data}`;
 
             // Apply color coding based on log content
-            if (data.includes('[ERROR]')) {
+            if (data.includes('[ERROR]') || data.includes('error') || data.includes('Error')) {
                 logLine.classList.add('error');
-            } else if (data.includes('[INFO]')) {
+            } else if (data.includes('[WARNING]') || data.includes('warning') || data.includes('Warning')) {
+                logLine.classList.add('warning');
+            } else if (data.includes('[INFO]') || data.includes('info') || data.includes('Info')) {
                 logLine.classList.add('info');
+            } else if (data.includes('[DEBUG]') || data.includes('debug') || data.includes('Debug')) {
+                logLine.classList.add('debug');
+            } else if (data.includes('[SUCCESS]') || data.includes('success') || data.includes('Success')) {
+                logLine.classList.add('success');
+            } else if (data.includes('system') || data.includes('System')) {
+                logLine.classList.add('system');
+            } else if (data.includes('user') || data.includes('User')) {
+                logLine.classList.add('user');
             }
 
             logContainer.appendChild(logLine);
