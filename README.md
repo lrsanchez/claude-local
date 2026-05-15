@@ -36,6 +36,30 @@ Both machines run Bazzite. Setup details per machine in [`docs/`](docs/).
    claude-smart --local
    ```
 
+## Log Viewer Application
+
+A new log viewer application has been added to provide better monitoring of your LLaMA server:
+
+### Features:
+- Real-time logs from `journalctl --user -u llama-server -f`
+- Tabbed interface for easy navigation:
+  - **Logs**: System logs from your LLaMA server
+  - **Slots**: Detailed, formatted slot information with status and parameters
+  - **Health**: Organized health status information including memory, GPU, model, and system details
+
+### Usage:
+1. Start the log viewer:
+   ```bash
+   npm start
+   ```
+2. Open your browser and navigate to `http://localhost:4000`
+3. Use the tabs to view different information sources
+
+The application automatically formats JSON responses from the `/slots` and `/health` endpoints for better readability, showing:
+- Slot ID, context size, and processing status
+- Key parameters and next token information
+- Memory, GPU, model, and system health details
+
 ## What's in this repo
 
 ```
@@ -51,6 +75,9 @@ claude-local/
 ├── systemd/
 │   ├── llama-server-px13.service   ← reference systemd unit for PX13
 │   └── llama-server-duo.service    ← reference systemd unit for Duo
+├── log-viewer.js                   ← Node.js log viewer application
+├── index.html                      ← Web interface for the log viewer
+├── package.json                    ← Application dependencies
 ├── LICENSE                         ← MIT
 └── CONTRIBUTING.md                 ← if you want to upstream changes
 ```
@@ -97,7 +124,7 @@ under "What we ruled out (so you don't waste time)". Highlights:
   SSM kernels (as of mid-2026). Stick with Qwen3-Coder for now.
 - **Unsloth Dynamic 2.0 quants** of Qwen3-Coder-30B have a Llama-3-style
   tokenizer artifact that crashes loading. Use the LM Studio Community quant.
-- **The `</s>` "control token" warning during model load is harmless cosmetic
+- **The `<tool_call>` "control token" warning during model load is harmless cosmetic
   noise**. Not the cause of any crash.
 - **Always check `dmesg` first when GPU stuff silently dies**. The HSA runtime
   segfault is invisible in llama.cpp's stdout but obvious in kernel logs.
