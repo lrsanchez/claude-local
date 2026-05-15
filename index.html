@@ -186,16 +186,16 @@
             const timestamp = new Date().toLocaleTimeString();
             logLine.innerHTML = `[${timestamp}] ${data}`;
 
-            // Apply color coding based on log content
-            if (data.includes('[ERROR]') || data.includes('error') || data.includes('Error')) {
+            // Apply color coding based on log content with better logic
+            if (data.includes('[ERROR]') || data.includes('error') || data.includes('Error') || data.includes('ERROR')) {
                 logLine.classList.add('error');
-            } else if (data.includes('[WARNING]') || data.includes('warning') || data.includes('Warning')) {
+            } else if (data.includes('[WARNING]') || data.includes('warning') || data.includes('Warning') || data.includes('WARNING')) {
                 logLine.classList.add('warning');
-            } else if (data.includes('[INFO]') || data.includes('info') || data.includes('Info')) {
+            } else if (data.includes('[INFO]') || data.includes('info') || data.includes('Info') || data.includes('INFO')) {
                 logLine.classList.add('info');
-            } else if (data.includes('[DEBUG]') || data.includes('debug') || data.includes('Debug')) {
+            } else if (data.includes('[DEBUG]') || data.includes('debug') || data.includes('Debug') || data.includes('DEBUG')) {
                 logLine.classList.add('debug');
-            } else if (data.includes('[SUCCESS]') || data.includes('success') || data.includes('Success')) {
+            } else if (data.includes('[SUCCESS]') || data.includes('success') || data.includes('Success') || data.includes('SUCCESS')) {
                 logLine.classList.add('success');
             } else if (data.includes('system') || data.includes('System')) {
                 logLine.classList.add('system');
