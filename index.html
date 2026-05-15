@@ -10,7 +10,7 @@
             margin: 0;
             padding: 20px;
             background-color: #1a1a1a;
-            color: #00ff00;
+            color: #ffffff;
             overflow: hidden;
         }
         .tabs {
@@ -201,6 +201,9 @@
                 logLine.classList.add('system');
             } else if (data.includes('user') || data.includes('User')) {
                 logLine.classList.add('user');
+            } else {
+                // Default color for unmatched lines to ensure they're visible
+                logLine.classList.add('info');
             }
 
             logContainer.appendChild(logLine);

@@ -6,9 +6,14 @@
 #   2. If --remote flag passed, force Anthropic API (no fallback).
 #   3. Default: try Anthropic API first; fall back to local if down.
 #
+# When launching local, appends a brief system prompt that reframes the
+# tools in Claude Code's context as real capabilities. Counters smaller
+# local models' tendency to hallucinate limitations ("I cannot directly
+# access...", "you should run this yourself...").
+#
 # Place at ~/.local/bin/claude-smart and chmod +x.
 #
-# Repo: https://github.com/<you>/claude-local
+# Repo: https://github.com/lrsanchez/claude-local
 
 set -uo pipefail
 
@@ -23,6 +28,14 @@ LOCAL_SERVICE="llama-server.service"
 REMOTE_HEALTH_URL="https://api.anthropic.com/v1/messages"
 HEALTH_TIMEOUT=3
 LOCAL_TIMEOUT=2
+
+# Optional: override the default system prompt boost by creating this file.
+# If the file doesn't exist, the built-in default below is used.
+LOCAL_SYSTEM_BOOST_FILE="${HOME}/.config/claude-smart/local-system-boost.txt"
+
+# Built-in default system prompt appended on --local launches.
+# Tuned for Qwen3-Coder-30B-A3B in Claude Code; adjust per model as needed.
+LOCAL_SYSTEM_BOOST_DEFAULT='You are operating as the backend model for Claude Code, an agentic coding CLI. The tools provided in your context (Read, Edit, Write, Bash, Glob, Grep, WebFetch, and any MCP tools) are REAL CAPABILITIES you can invoke, not abstract concepts. Never say "I cannot directly access...", "I do not have the ability to...", or "you should run this yourself" about any tool that appears in your available tools. When you need to perform an action, emit the corresponding tool call. When a tool errors, read the error output and adapt — errors do not mean the capability is missing, they mean the specific invocation failed and should be retried with adjusted parameters. You are an agent that DOES things, not a chatbot that suggests them.'
 
 # ---- colors ----------------------------------------------------------------
 
@@ -66,11 +79,18 @@ CURRENT CONFIG:
   LOCAL_URL:      $LOCAL_URL
   LOCAL_MODEL:    $LOCAL_MODEL
   LOCAL_SERVICE:  $LOCAL_SERVICE
+  BOOST FILE:     $LOCAL_SYSTEM_BOOST_FILE
+                  $(if [[ -f "$LOCAL_SYSTEM_BOOST_FILE" ]]; then echo "(present, using custom)"; else echo "(absent, using built-in default)"; fi)
 
 Any other args are passed to ${C_BOLD}claude${C_RST} as-is.
 
 NOTE: cold-start local sessions take ~2 min for first message (full prefill
 of system prompt + tool defs + claude-mem context). Follow-ups are fast.
+
+On --local launches, claude-smart appends a brief system prompt to keep
+the local model from hallucinating tool limitations. Override the prompt
+by writing your own to:
+  ~/.config/claude-smart/local-system-boost.txt
 EOF
       exit 0
       ;;
@@ -105,7 +125,7 @@ ensure_local_running() {
   if probe_local; then
     return 0
   fi
-  # Only try to start the service if LOCAL_URL is local (127.x or localhost)
+  # Only try to start the service if LOCAL_URL is local (127.x or localhost).
   case "$LOCAL_URL" in
     *127.0.0.1*|*localhost*)
       warn "local server not responding, attempting to start ${LOCAL_SERVICE}..."
@@ -132,16 +152,30 @@ ensure_local_running() {
   esac
 }
 
+# Read the system prompt boost — custom file if present, otherwise built-in.
+get_system_boost() {
+  if [[ -f "$LOCAL_SYSTEM_BOOST_FILE" ]]; then
+    cat "$LOCAL_SYSTEM_BOOST_FILE"
+  else
+    echo "$LOCAL_SYSTEM_BOOST_DEFAULT"
+  fi
+}
+
 # ---- backend launchers -----------------------------------------------------
 
 launch_local() {
   ensure_local_running || return 1
+
+  local boost
+  boost=$(get_system_boost)
+
   ok "using local backend (${LOCAL_MODEL} @ ${LOCAL_URL})"
   warn "first message will take ~2 min for cold-start prefill"
+
   ANTHROPIC_BASE_URL="$LOCAL_URL" \
   ANTHROPIC_AUTH_TOKEN="$LOCAL_AUTH" \
   ANTHROPIC_MODEL="$LOCAL_MODEL" \
-  exec claude "${PASSTHROUGH_ARGS[@]}"
+  exec claude --append-system-prompt "$boost" "${PASSTHROUGH_ARGS[@]}"
 }
 
 launch_remote() {
