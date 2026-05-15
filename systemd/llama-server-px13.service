@@ -1,0 +1,24 @@
+[Unit]
+Description=llama.cpp server (Qwen3-Coder-30B for Claude Code)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/distrobox enter llama-rocm -- llama-server \
+    -m /var/home/%u/models/qwen3-coder-30b/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf \
+    --host 127.0.0.1 \
+    --port 8080 \
+    -ngl 999 \
+    -c 131072 \
+    --parallel 2 \
+    -fa 1 \
+    --no-mmap \
+    --jinja \
+    --temp 0.7 \
+    --top-p 0.8 \
+    --top-k 20
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

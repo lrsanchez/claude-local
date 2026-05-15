@@ -1,0 +1,26 @@
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Linux
+*.kate-swp
+.directory
+
+# Logs
+*.log
+
+# Local overrides — copy and edit but don't commit
+bin/claude-smart.local
+*.local
+
+# Models (way too big to commit)
+models/
+*.gguf
+
+# Test outputs
+output/
+tmp/

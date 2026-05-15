@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# claude-smart — Claude Code wrapper with local fallback
+#
+# Decision tree:
+#   1. If --local flag passed, force local llama.cpp backend.
+#   2. If --remote flag passed, force Anthropic API (no fallback).
+#   3. Default: try Anthropic API first; fall back to local if down.
+#
+# Place at ~/.local/bin/claude-smart and chmod +x.
+#
+# Repo: https://github.com/<you>/claude-local
+
+set -uo pipefail
+
+# ---- config ----------------------------------------------------------------
+# Edit these for your specific machine.
+
+LOCAL_URL="http://127.0.0.1:8080"            # For Tailscale bridge: http://bazzite-proart:8080
+LOCAL_MODEL="qwen3-coder-30b"                # Or qwen2.5-coder-7b on Duo, etc.
+LOCAL_AUTH="local-no-auth-needed"
+LOCAL_SERVICE="llama-server.service"
+
+REMOTE_HEALTH_URL="https://api.anthropic.com/v1/messages"
+HEALTH_TIMEOUT=3
+LOCAL_TIMEOUT=2
+
+# ---- colors ----------------------------------------------------------------
+
+if [[ -t 1 ]]; then
+  C_DIM=$'\033[2m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'
+  C_RED=$'\033[31m'; C_BOLD=$'\033[1m'; C_RST=$'\033[0m'
+else
+  C_DIM=""; C_GREEN=""; C_YELLOW=""; C_RED=""; C_BOLD=""; C_RST=""
+fi
+
+log() { echo "${C_DIM}[claude-smart]${C_RST} $*" >&2; }
+ok()  { echo "${C_GREEN}[claude-smart]${C_RST} $*" >&2; }
+warn(){ echo "${C_YELLOW}[claude-smart]${C_RST} $*" >&2; }
+err() { echo "${C_RED}[claude-smart]${C_RST} $*" >&2; }
+
+# ---- mode parsing ----------------------------------------------------------
+
+MODE="auto"
+PASSTHROUGH_ARGS=()
+
+for arg in "$@"; do
+  case "$arg" in
+    --local)   MODE="local"  ;;
+    --remote)  MODE="remote" ;;
+    --status)  MODE="status" ;;
+    --help-smart)
+      cat <<EOF
+${C_BOLD}claude-smart${C_RST} — Claude Code with automatic local fallback
+
+USAGE:
+  claude-smart [--local | --remote | --status | --help-smart] [claude args...]
+
+MODES:
+  (default)       Try Anthropic API; fall back to local on failure
+  --local         Force local llama.cpp backend
+  --remote        Force Anthropic API, no fallback
+  --status        Show health of both backends and exit
+  --help-smart    This help
+
+CURRENT CONFIG:
+  LOCAL_URL:      $LOCAL_URL
+  LOCAL_MODEL:    $LOCAL_MODEL
+  LOCAL_SERVICE:  $LOCAL_SERVICE
+
+Any other args are passed to ${C_BOLD}claude${C_RST} as-is.
+
+NOTE: cold-start local sessions take ~2 min for first message (full prefill
+of system prompt + tool defs + claude-mem context). Follow-ups are fast.
+EOF
+      exit 0
+      ;;
+    *) PASSTHROUGH_ARGS+=("$arg") ;;
+  esac
+done
+
+# ---- health probes ---------------------------------------------------------
+
+probe_local() {
+  curl -fsS --max-time "$LOCAL_TIMEOUT" \
+    "${LOCAL_URL}/health" >/dev/null 2>&1
+}
+
+probe_remote() {
+  local http_code
+  http_code=$(curl -s --max-time "$HEALTH_TIMEOUT" -o /dev/null \
+    -w "%{http_code}" \
+    -X POST "$REMOTE_HEALTH_URL" \
+    -H "Content-Type: application/json" \
+    -H "x-api-key: smart-probe" \
+    -H "anthropic-version: 2023-06-01" \
+    -d '{}' 2>/dev/null)
+
+  case "$http_code" in
+    400|401|403) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+ensure_local_running() {
+  if probe_local; then
+    return 0
+  fi
+  # Only try to start the service if LOCAL_URL is local (127.x or localhost)
+  case "$LOCAL_URL" in
+    *127.0.0.1*|*localhost*)
+      warn "local server not responding, attempting to start ${LOCAL_SERVICE}..."
+      if systemctl --user start "$LOCAL_SERVICE" 2>/dev/null; then
+        for i in {1..30}; do
+          sleep 2
+          if probe_local; then
+            ok "local server up after ${i} checks"
+            return 0
+          fi
+        done
+        err "local server didn't come up within 60s"
+        return 1
+      else
+        err "couldn't start ${LOCAL_SERVICE} (check: systemctl --user status ${LOCAL_SERVICE})"
+        return 1
+      fi
+      ;;
+    *)
+      err "remote local server at ${LOCAL_URL} not responding"
+      err "if this is a Tailscale bridge, ensure the remote machine is up and reachable"
+      return 1
+      ;;
+  esac
+}
+
+# ---- backend launchers -----------------------------------------------------
+
+launch_local() {
+  ensure_local_running || return 1
+  ok "using local backend (${LOCAL_MODEL} @ ${LOCAL_URL})"
+  warn "first message will take ~2 min for cold-start prefill"
+  ANTHROPIC_BASE_URL="$LOCAL_URL" \
+  ANTHROPIC_AUTH_TOKEN="$LOCAL_AUTH" \
+  ANTHROPIC_MODEL="$LOCAL_MODEL" \
+  exec claude "${PASSTHROUGH_ARGS[@]}"
+}
+
+launch_remote() {
+  ok "using Anthropic API"
+  unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL
+  exec claude "${PASSTHROUGH_ARGS[@]}"
+}
+
+# ---- main dispatch ---------------------------------------------------------
+
+case "$MODE" in
+  status)
+    echo "${C_BOLD}Backend status:${C_RST}"
+    if probe_remote; then
+      echo "  Anthropic API:  ${C_GREEN}up${C_RST}"
+    else
+      echo "  Anthropic API:  ${C_RED}down/unreachable${C_RST}"
+    fi
+    if probe_local; then
+      echo "  Local:          ${C_GREEN}up${C_RST} @ ${LOCAL_URL}"
+    else
+      echo "  Local:          ${C_RED}down${C_RST} @ ${LOCAL_URL}"
+    fi
+    exit 0
+    ;;
+
+  local)
+    launch_local
+    ;;
+
+  remote)
+    if ! probe_remote; then
+      err "Anthropic API appears unreachable and --remote was forced. Aborting."
+      err "Run without --remote to fall back, or use --local."
+      exit 1
+    fi
+    launch_remote
+    ;;
+
+  auto)
+    log "probing Anthropic API..."
+    if probe_remote; then
+      launch_remote
+    else
+      warn "Anthropic API unreachable, falling back to local"
+      launch_local || {
+        err "both backends unavailable. Check network and \`systemctl --user status ${LOCAL_SERVICE}\`"
+        exit 1
+      }
+    fi
+    ;;
+esac
