@@ -1,155 +1,168 @@
 # Zenbook Duo (Core Ultra 9, 32 GB) — Bazzite Setup
 
 Companion setup to the PX13 runbook for a **CPU-class machine without a real
-GPU accelerator**. The Zenbook Duo has an Intel Core Ultra 9 (Meteor/Lunar
-Lake) with Arc integrated graphics — useful for graphics but not competitive
-with discrete GPUs or AMD APUs for LLM workloads in 2026.
+GPU accelerator**. The Zenbook Duo has an Intel Core Ultra 9 185H with Arc
+integrated graphics — useful for graphics but not competitive with discrete
+GPUs or AMD APUs for LLM workloads.
 
 **Three options for this machine, ordered by what you should actually use:**
 
-1. **[Tailscale bridge to PX13](TAILSCALE-BRIDGE.md)** — recommended.
+1. **[Tailscale bridge to PX13](TAILSCALE-BRIDGE.md)** — recommended for daily use.
    Full 30B perf from anywhere with internet.
-2. **Local CPU inference** — covered here. Smaller model (7B), CPU-only.
-   Slow but truly offline.
+2. **Local CPU inference** — covered here. Offline-capable backup, ~6-10 t/s gen.
 3. **Real Anthropic API via plain `claude`** — when online and not API-down.
 
 This doc covers option 2 — the "I'm on a plane and the Anthropic API is also
-down somehow" tier.
+down somehow" tier. Now actually *usable* (not just technically functional)
+thanks to picking the right model.
 
 ---
 
-## Hardware realities
+## Hardware tested
 
-- 32 GB RAM (vs PX13's 128 GB unified)
-- Intel Arc iGPU shares system memory but Vulkan inference on Intel is hit-or-miss
-- CPU inference on Core Ultra 9 with AVX-512 is actually decent — that's the path
-- Battery drains in ~45 min under sustained CPU inference; plug in
+- **CPU**: Intel Core Ultra 9 185H (Meteor Lake) — AVX2 + VNNI, no AVX-512
+- **RAM**: 32 GB
+- **GPU**: Arc integrated (not used for inference)
+- **OS**: Bazzite (Fedora Atomic)
 
-**The right model class:** 7B-14B at Q4. Not the 30B you run on PX13. A 30B
-model at Q4 needs ~17 GB just for weights, and on CPU you'd see ~3-5 t/s —
-unusable for interactive Claude Code.
+**Note for Lunar Lake users** (Core Ultra 9 200V series): Intel stripped
+AVX-512 from those SKUs. The setup below uses the official prebuilt
+llama.cpp container which handles both — no special build flags needed.
 
 ---
 
-## Recommended models
+## The model: DeepSeek-Coder-V2-Lite-Instruct (16B MoE)
 
-### Primary: Qwen2.5-Coder-7B-Instruct (~4.4 GB Q4)
+After testing several options, this is what works for the Duo:
 
-The sweet spot for a 32 GB CPU laptop. Specifically coding-tuned, supports
-tool calling, ~12-20 t/s on a Core Ultra 9.
+| Property | Value | Why it matters |
+|---|---|---|
+| Total params | 15.7B | Fits in 32 GB RAM at Q4 |
+| Active params (MoE) | 2.4B | Generation speed comparable to a 2-3B dense model |
+| Native context | 160K | Easily fits Claude Code's ~50K context injection |
+| Quantization | Q4_K_M | ~10 GB on disk, ~21 GB total runtime |
+| License | Custom (research/commercial OK with attribution) | Suitable for Enhance Tech use |
 
-```bash
-hf download bartowski/Qwen2.5-Coder-7B-Instruct-GGUF \
-  --include "*Q4_K_M*" \
-  --local-dir ~/models/qwen2.5-coder-7b
-```
+**Why not Qwen2.5-Coder-7B?** It's smaller (4.4 GB) and slightly faster, but
+its 32K native context is *below* Claude Code + claude-mem's ~50K injection.
+First message fails with "request exceeds available context size" 100% of
+the time. Qwen2.5-Coder-14B has the same 32K ceiling.
 
-### Patient option: Qwen2.5-Coder-14B-Instruct (~8.4 GB Q4)
-
-Smarter, slower. ~5-10 t/s on CPU. Worth it if you have patience and want
-better code quality on harder problems.
-
-```bash
-hf download bartowski/Qwen2.5-Coder-14B-Instruct-GGUF \
-  --include "*Q4_K_M*" \
-  --local-dir ~/models/qwen2.5-coder-14b
-```
-
-### Don't try
-
-- Anything 30B+ on CPU (too slow for interactive use)
-- The Qwen3-Coder family on Intel Arc via Vulkan (immature stack)
-- Qwen3.6-35B-A3B (hybrid Mamba, no CPU implementation worth using)
+**Why not Qwen3-Coder-30B?** 17 GB Q4, 256K context — perfect on paper, but
+its dense generation on CPU lands around 2-3 t/s. Painfully slow.
+DeepSeek-Coder-V2-Lite's MoE sparsity gets you 3x that speed at comparable
+quality.
 
 ---
 
 ## 1. Bazzite setup
 
-No special kargs needed — CPU inference doesn't care about GTT.
+No special kargs needed — CPU inference doesn't care about GTT or IOMMU.
 
-Check what your CPU supports (cosmetic — `-DGGML_NATIVE=ON` in the build
-step below handles either case automatically):
+Confirm your CPU's instruction set support (informational):
 
 ```bash
 grep -oE "(avx[^ ]*|vnni[^ ]*)" /proc/cpuinfo | sort -u
 ```
 
-- **Meteor Lake & older**: you'll see `avx512f`, `avx512vnni`, `avx512bf16`, etc.
-- **Lunar Lake (Core Ultra 9 200V series)**: AVX-512 was stripped. You'll see
-  `avx`, `avx2`, `avx_vnni`. Still fully functional, ~25% slower for
-  inference than AVX-512.
+- **Meteor Lake & older**: shows `avx`, `avx2`, `avx_vnni`, often `avx512*`
+- **Lunar Lake (200V series)**: shows `avx`, `avx2`, `avx_vnni` (no AVX-512)
+
+The prebuilt container handles both — no manual flag tuning needed.
 
 ---
 
-## 2. Distrobox container — minimal Fedora toolbox
+## 2. Model fetch
 
 ```bash
-distrobox create --name llama-cpu \
-  --image quay.io/toolbx/fedora-toolbox:43
+mkdir -p ~/models/deepseek-coder-v2-lite
 
-distrobox enter llama-cpu
-sudo dnf install -y git cmake gcc gcc-c++ make libcurl-devel
-exit
+hf download bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF \
+  --include "*Q4_K_M*" \
+  --local-dir ~/models/deepseek-coder-v2-lite
 ```
+
+About 10 GB. Verify when done:
+
+```bash
+ls -lh ~/models/deepseek-coder-v2-lite/
+```
+
+You should see `DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf` (~10 GB). If
+the filename differs slightly (Bartowski occasionally adjusts), note it
+exactly — you'll need it in the systemd unit.
 
 ---
 
-## 3. Build llama.cpp for CPU with AVX-512
+## 3. The container — official llama.cpp prebuilt server image
+
+**Skip the build-from-source path.** Use the official prebuilt image instead.
+It's maintained by the llama.cpp team, tracks master HEAD, ships with the
+`/v1/messages` Anthropic Messages API endpoint, and includes optimizations
+for x86 CPUs out of the box.
 
 ```bash
-distrobox enter llama-cpu
-
-cd ~
-git clone https://github.com/ggml-org/llama.cpp.git
-cd llama.cpp
-
-# -DGGML_NATIVE=ON lets the compiler use whatever instructions your CPU
-# actually supports. Works on Lunar Lake (AVX2 + VNNI), Meteor Lake
-# (AVX-512), and older Intel/AMD chips alike. Don't hardcode AVX-512
-# flags — Intel stripped them from Lunar Lake Core Ultra 9 SKUs and
-# explicit flags fail to compile there.
-cmake -B build -S . \
-  -DGGML_NATIVE=ON \
-  -DCMAKE_BUILD_TYPE=Release
-
-cmake --build build --config Release -j$(nproc)
-exit
+podman pull ghcr.io/ggml-org/llama.cpp:server
 ```
 
-`-DGGML_NATIVE=ON` tells the compiler to use every instruction the host
-CPU supports. On Meteor Lake you get AVX-512 paths automatically; on
-Lunar Lake (where Intel removed AVX-512) you get AVX2 + VNNI instead.
-The latter is about 25% slower than AVX-512 for INT8 inference but
-still completely usable for Qwen2.5-Coder-7B at Q4.
+About 200 MB. Done.
 
-Build takes ~10 minutes.
+**Manual test first** (so you catch issues before wiring systemd):
+
+```bash
+podman run --rm -it \
+  -p 127.0.0.1:8080:8080 \
+  -v /var/home/leandro/models:/models:z \
+  ghcr.io/ggml-org/llama.cpp:server \
+  -m /models/deepseek-coder-v2-lite/DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf \
+  --host 0.0.0.0 --port 8080 \
+  --alias deepseek-coder-v2-lite \
+  -c 65536 --parallel 1 -t 16 --jinja
+```
+
+**Critical flag: `:z` on the volume mount.** Bazzite uses SELinux. Without
+`:z`, the container can't read the model file (you'll get "Permission denied"
+in the logs). The `:z` tells podman to relabel the directory for shared
+container access.
+
+Watch for these in the logs:
+- `n_ctx_train (163840)` — confirms 160K native context
+- `projected to use 21821 MiB of host memory` — ~21 GB total footprint
+- `server is listening on http://0.0.0.0:8080` — the win condition
+
+Smoke test from another terminal:
+
+```bash
+curl -s http://127.0.0.1:8080/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-coder-v2-lite","max_tokens":80,"messages":[{"role":"user","content":"Write a python function to reverse a string."}]}' \
+  | jq
+```
+
+Should return clean Anthropic-format JSON with Python code. Then `Ctrl+C` the
+foreground run.
 
 ---
 
 ## 4. systemd user service
 
 Use the reference unit at [`../systemd/llama-server-duo.service`](../systemd/llama-server-duo.service),
-or write your own at `~/.config/systemd/user/llama-server.service`:
+or write your own at `~/.config/systemd/user/llama-server.service`.
+
+**Important**: do NOT use multi-line `ExecStart` with backslash continuations.
+A single trailing space after any `\` will break systemd parsing and you'll
+get `error: invalid argument: \` failures. Use one long line:
 
 ```ini
 [Unit]
-Description=llama.cpp server (Qwen2.5-Coder-7B for Claude Code, CPU)
+Description=llama.cpp server (DeepSeek-Coder-V2-Lite-16B for Claude Code, CPU prebuilt)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/distrobox enter llama-cpu -- \
-    /var/home/%u/llama.cpp/build/bin/llama-server \
-    -m /var/home/%u/models/qwen2.5-coder-7b/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf \
-    --host 127.0.0.1 \
-    --port 8080 \
-    -c 32768 \
-    --parallel 1 \
-    -t 16 \
-    --jinja \
-    --temp 0.7 \
-    --top-p 0.8 \
-    --top-k 20
+ExecStartPre=-/usr/bin/podman rm -f llama-server
+ExecStart=/usr/bin/podman run --rm --name llama-server -p 127.0.0.1:8080:8080 -v /var/home/%u/models:/models:z ghcr.io/ggml-org/llama.cpp:server -m /models/deepseek-coder-v2-lite/DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf --host 0.0.0.0 --port 8080 --alias deepseek-coder-v2-lite --parallel 1 -c 65536 -t 16 --jinja
+ExecStop=/usr/bin/podman stop -t 5 llama-server
 Restart=on-failure
 RestartSec=10
 
@@ -157,40 +170,58 @@ RestartSec=10
 WantedBy=default.target
 ```
 
-**Key differences from PX13 setup:**
+**Important flag notes:**
 
-- No `-ngl` — CPU inference, no GPU offload
-- No `-fa` — flash attention is GPU-only in llama.cpp
-- No `--no-mmap` — CPU benefits from mmap for paging
-- `-t 16` — Core Ultra 9 has 24 cores (8P + 16E) but inference tops out
-  around 12-16 threads; more = contention. Tune for your specific SKU.
-- `-c 32768` with `--parallel 1` = full 32K context per session
-- One parallel slot — CPU speed doesn't have throughput to spare for
-  concurrent sessions
+- `ExecStartPre=-/usr/bin/podman rm -f llama-server` — cleans up any stale
+  container before starting. Leading `-` ignores errors if there's nothing to
+  remove.
+- `ExecStop=/usr/bin/podman stop -t 5 llama-server` — ensures the container
+  actually stops on `systemctl stop`, not just orphaned.
+- `--parallel 1` — single slot, full 64K context per session. CPU speed
+  doesn't have throughput to spare for concurrent sessions anyway.
+- `-c 65536` — 64K context. Plenty for Claude Code's ~50K injection.
+- `-t 16` — 16 threads. Core Ultra 9 has 22 logical cores but inference tops
+  out around 12-16 threads; more = contention.
+- `--jinja` — required for tool-call parsing. Without it, Claude Code's tool
+  calls return malformed.
+- `--host 0.0.0.0` inside container, but `-p 127.0.0.1:8080:8080` in podman
+  means it only listens on localhost from the host's perspective.
 
-Enable and start:
+**Don't enable autostart** if you prefer manual control over memory:
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now llama-server.service
-sudo loginctl enable-linger $USER
+# Note: start, not enable --now
+systemctl --user start llama-server.service
 ```
 
-First load takes 20-40 seconds (paging 4.4 GB into RAM).
+`claude-smart` will lazy-start the service on first `--local` invocation.
 
 ---
 
 ## 5. Wire up Claude Code
 
-Edit `~/.local/bin/claude-smart` on this machine to update the model name:
+Edit `~/.local/bin/claude-smart` to point at this model:
 
 ```bash
-LOCAL_MODEL="qwen2.5-coder-7b"
+sed -i 's/LOCAL_MODEL=.*/LOCAL_MODEL="deepseek-coder-v2-lite"/' ~/.local/bin/claude-smart
 ```
 
-Then use as normal:
+Verify:
 
 ```bash
+grep LOCAL_MODEL ~/.local/bin/claude-smart
+```
+
+Then:
+
+```bash
+claude-smart --status
+# Should show:
+#   Anthropic API:  up
+#   Local:          up @ http://127.0.0.1:8080
+
+cd ~/some-project
 claude-smart --local
 ```
 
@@ -198,29 +229,33 @@ claude-smart --local
 
 ## 6. Realistic performance expectations
 
-| Action | Time on Zenbook Duo CPU |
+Measured on Duo with Core Ultra 9 185H, 32 GB RAM, this exact config:
+
+| Action | Time |
 |---|---|
-| Model load | 20-40 sec |
-| First message (cold prefill of ~30K tokens) | 4-8 min |
-| Follow-up messages | 30-90 sec |
-| Generation streaming | 12-20 t/s (Qwen2.5-Coder-7B) |
+| `claude-smart --local` startup | 1-2 sec |
+| Model load (if service was stopped) | 30-60 sec |
+| First message cold prefill (~50K tokens) | 5-10 min |
+| Follow-up messages with cache hit | 30-90 sec |
+| Generation streaming | 6-10 t/s |
+| GPU memory | n/a (CPU only) |
+| System memory used | ~21 GB |
 
 **Be honest about the use case:**
 
+- ✅ Single-file edits, refactors, code explanation
+- ✅ Standard Claude Code tool use (Read, Edit, Bash, Glob, Grep)
 - ✅ Quick code questions
-- ✅ Single-function generation
-- ✅ Explanation of error messages
-- ✅ Boilerplate generation
 - ✅ Truly offline scenarios (flights, conferences with no wifi)
-- ❌ Long agentic Claude Code sessions
-- ❌ Multi-file refactoring
-- ❌ Anything that requires reading >5 files
+- ⚠️ Long agentic Claude Code sessions are slow but possible
+- ❌ Multi-file deep refactoring across many files in one session
+- ❌ Real production work — use real `claude` or PX13 via Tailscale
 
 **For this machine, prioritize:**
 
 1. Real Claude API when online (primary)
-2. Tailscale to PX13 when reachable (snappy 30B over Tailscale)
-3. This local 7B only when both above fail
+2. Tailscale to PX13 when reachable (full 30B at PX13 speeds)
+3. This local 16B MoE only when both above fail
 
 See [`TAILSCALE-BRIDGE.md`](TAILSCALE-BRIDGE.md) for option 2.
 
@@ -228,11 +263,11 @@ See [`TAILSCALE-BRIDGE.md`](TAILSCALE-BRIDGE.md) for option 2.
 
 ## 7. Heat & battery
 
-CPU inference pegs all cores at 100% for prefill + generation duration.
+CPU inference pegs ~16 cores at 100% for prefill + generation duration.
 
-- **Plugged in**: fans loud, chassis warm but fine, ~45 W package power
-- **On battery**: thermal throttle within minutes, battery drains in ~45 min
-  under sustained load
+- **Plugged in**: fans loud, chassis warm, ~50-65 W package power
+- **On battery**: thermal throttle within minutes, battery drains in
+  ~30-45 min under sustained load
 
 This is a planned-burst tool — fire off a query, get an answer, let it cool.
 Don't sit on it doing autonomous agent work.
@@ -243,29 +278,44 @@ Don't sit on it doing autonomous agent work.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| OOM during load | RAM contention with browser/IDE | Close apps, model is ~4.4 GB |
-| Generation < 5 t/s | Too many threads | Drop `-t 16` to `-t 12` or `-t 8` |
-| First message hangs forever | CPU prefill at 30K tokens is slow | Wait it out, or disable some MCPs |
-| Tool calls malformed | `--jinja` missing | Add to systemd unit |
-| Fan at 100% | Normal during inference | Accept it, plug in, or use PX13 over Tailscale |
+| Port 8080 already in use | Old llama-server still running | `systemctl --user stop llama-server.service`, `pkill -f llama-server`, `podman rm -f llama-server` |
+| Container can't read model | SELinux blocking volume mount | Add `:z` to the volume spec: `-v /path:/models:z` |
+| `error: invalid argument: \` | Trailing whitespace in systemd ExecStart line continuation | Use one long ExecStart line, no `\` continuations |
+| OOM during load | RAM contention with browser/IDE | Close apps, model needs ~21 GB total |
+| Tool calls malformed | `--jinja` missing | Add to systemd unit, restart |
+| Context overflow on first message | Different model with smaller native context | This setup uses DeepSeek-Coder-V2-Lite (160K). If you swapped to a 32K model, that's the cause. |
+| `</s>` warning on load | Harmless cosmetic noise | Ignore |
+| 404 on `/v1/messages` | Build of llama.cpp predates Anthropic endpoint | Use the official prebuilt `ghcr.io/ggml-org/llama.cpp:server` image, not a hand-built binary |
 
 ---
 
-## 9. Why not the Intel Arc iGPU?
+## 9. Why we ended up here (lessons learned)
 
-Intel Arc on Core Ultra has Vulkan compute, and llama.cpp's Vulkan backend
-works on it. In practice:
+This doc is the third revision. Earlier attempts taught us:
 
-- Vulkan on Intel iGPU gets ~30-50% of CPU performance for most models
-- Driver stability on Linux for LLM workloads is variable
-- VRAM is shared system memory anyway, so no real memory advantage
+**Build-from-source on master HEAD doesn't always have `/v1/messages`.**
+We rebuilt at `b6014` (the version we used on PX13) and the Anthropic endpoint
+still wasn't there. The endpoint is reliably available in the official
+prebuilt `ghcr.io/ggml-org/llama.cpp:server` image, which tracks master HEAD
+and ships the feature compiled in. Use the prebuilt image.
 
-Worth trying if you want to tinker:
+**Qwen2.5-Coder-7B's 32K native context is too small for Claude Code.**
+Combined with claude-mem's context injection (~30-55K tokens at session start),
+first message always fails with "request exceeds available context size".
+DeepSeek-Coder-V2-Lite's 160K native context is the actual minimum viable.
 
-```bash
-cmake -B build -S . \
-  -DGGML_VULKAN=ON \
-  -DCMAKE_BUILD_TYPE=Release
-```
+**MoE models are the right call for CPU.** A 2.4B-active MoE generates at
+roughly the speed of a 2-3B dense model, while having the knowledge breadth
+of a much larger model. DeepSeek-Coder-V2-Lite hits this sweet spot for CPU
+inference.
 
-For Intel-class hardware in 2026, CPU inference (AVX2 + VNNI or AVX-512 where available) is the pragmatic path.
+**SELinux blocks podman volume mounts on Bazzite without `:z`.** Symptom is
+"Permission denied" reading the model file. Trivial fix once you know.
+
+**Multi-line `ExecStart` in systemd units is fragile.** Any trailing
+whitespace on a `\` continuation breaks parsing with `error: invalid
+argument: \`. Use one long line.
+
+---
+
+**Maintained by:** Leandro Sanchez, Enhance Tech.

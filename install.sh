@@ -90,7 +90,7 @@ if [[ "$MODE" != "bridge" ]]; then
     CONTAINER_IMAGE="docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2.3"
   else
     UNIT_SRC="./systemd/llama-server-duo.service"
-    MODEL_PATH="${HOME}/models/qwen2.5-coder-7b/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf"
+    MODEL_PATH="${HOME}/models/deepseek-coder-v2-lite/DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf"
     CONTAINER_NAME="llama-cpu"
     CONTAINER_IMAGE="quay.io/toolbx/fedora-toolbox:43"
   fi

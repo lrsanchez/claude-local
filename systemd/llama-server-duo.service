@@ -1,21 +1,12 @@
 [Unit]
-Description=llama.cpp server (Qwen2.5-Coder-7B for Claude Code, CPU)
+Description=llama.cpp server (DeepSeek-Coder-V2-Lite-16B for Claude Code, CPU prebuilt)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/distrobox enter llama-cpu -- \
-    /var/home/%u/llama.cpp/build/bin/llama-server \
-    -m /var/home/%u/models/qwen2.5-coder-7b/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf \
-    --host 127.0.0.1 \
-    --port 8080 \
-    -c 32768 \
-    --parallel 1 \
-    -t 16 \
-    --jinja \
-    --temp 0.7 \
-    --top-p 0.8 \
-    --top-k 20
+ExecStartPre=-/usr/bin/podman rm -f llama-server
+ExecStart=/usr/bin/podman run --rm --name llama-server -p 127.0.0.1:8080:8080 -v /var/home/%u/models:/models:z ghcr.io/ggml-org/llama.cpp:server -m /models/deepseek-coder-v2-lite/DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf --host 0.0.0.0 --port 8080 --alias deepseek-coder-v2-lite --parallel 1 -c 65536 -t 16 --jinja
+ExecStop=/usr/bin/podman stop -t 5 llama-server
 Restart=on-failure
 RestartSec=10
 
