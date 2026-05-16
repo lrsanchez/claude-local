@@ -12,23 +12,24 @@ When the Anthropic API is down, rate-limited, or you're offline, `claude-smart
 | Machine | CPU/GPU | RAM | Model | Tokens/sec |
 |---|---|---|---|---|
 | ASUS ProArt PX13 | Ryzen AI Max+ 395 / Radeon 8060S (gfx1151) | 128 GB unified | Qwen3-Coder-30B-A3B Q4_K_M | 319 prefill / 26 gen |
-| ASUS Zenbook Duo | Core Ultra 9 185H (Meteor Lake) / Arc iGPU | 32 GB | Qwen3.5-4B UD-Q4_K_XL (via Aider) | ~10 gen |
+| ASUS Zenbook Duo | Core Ultra 9 185H (Meteor Lake) / Arc iGPU (Vulkan) | 32 GB | Qwen2.5-Coder-3B Q4_K_M (via Aider) | 250 prefill / 12 gen |
 
 Both machines run Bazzite. Setup details per machine in [`docs/`](docs/).
 
 **Two-tool architecture:** The PX13 runs Claude Code against the local
-llama-server (full agentic, GPU-accelerated). The Duo runs Aider against a
-local Qwen3.5-4B (lighter agentic, CPU). Claude Code's internal request
-timeout (~10-12 min) is incompatible with CPU prefill times for its 30-55K
-context injection — Aider's ~5-10K context is the fix. See
-[`docs/ZENBOOK-DUO.md`](docs/ZENBOOK-DUO.md) for the full explanation.
+llama-server (full agentic, ROCm GPU). The Duo runs Aider against a local
+Qwen2.5-Coder-3B on Vulkan (lighter agentic, Arc iGPU). Claude Code's
+internal request timeout (~10-12 min) is incompatible with iGPU prefill for
+its 30-55K context injection — Aider's ~5-10K context sidesteps this entirely.
+See [`docs/ZENBOOK-DUO.md`](docs/ZENBOOK-DUO.md) for the full explanation.
 
 ## Quick start
 
 1. Pick your hardware guide:
-   - **[PX13 (Strix Halo)](docs/PX13-BAZZITE.md)** — primary, full-power setup (Claude Code + GPU)
-   - **[Zenbook Duo (CPU-only)](docs/ZENBOOK-DUO.md)** — Aider + Qwen3.5-4B, offline backup
+   - **[PX13 (Strix Halo)](docs/PX13-BAZZITE.md)** — primary, full-power setup (Claude Code + ROCm GPU)
+   - **[Zenbook Duo (Vulkan iGPU)](docs/ZENBOOK-DUO.md)** — Aider + Qwen2.5-Coder-3B + Arc iGPU, offline backup
    - **[Aider setup](docs/AIDER-SETUP.md)** — Aider installation and configuration for the Duo
+   - **[Vulkan notes](docs/VULKAN-NOTES.md)** — Intel Arc iGPU gotchas and verification steps
    - **[Tailscale bridge](docs/TAILSCALE-BRIDGE.md)** — point the Duo at the PX13 over Tailscale, get full 30B perf anywhere
 
 2. Walk through kernel args, distrobox container, model download per your hardware doc
@@ -78,8 +79,9 @@ claude-local/
 │   └── claude-smart                ← the wrapper script
 ├── docs/
 │   ├── PX13-BAZZITE.md             ← Strix Halo / Radeon 8060S setup
-│   ├── ZENBOOK-DUO.md              ← Core Ultra 9 / CPU setup (Aider + Qwen3.5-4B)
+│   ├── ZENBOOK-DUO.md              ← Core Ultra 9 / Vulkan setup (Aider + Qwen2.5-Coder-3B)
 │   ├── AIDER-SETUP.md              ← Aider installation and config for Duo
+│   ├── VULKAN-NOTES.md             ← Intel Arc iGPU Vulkan gotchas
 │   ├── TAILSCALE-BRIDGE.md         ← remote-access pattern
 │   └── JOURNAL.md                  ← Day 1 war stories (testing history)
 ├── systemd/
@@ -154,12 +156,14 @@ under "What we ruled out (so you don't waste time)". Highlights:
 
 ## Day 1 War Stories
 
-The Duo CPU inference path took a full day of testing to land on Aider +
-Qwen3.5-4B. Models tried and rejected: Qwen2.5-Coder-7B (context too small),
-DeepSeek-Coder-V2-Lite (hallucinates tool calls), Qwen3.5-9B/4B/0.8B (all
-time out or too small with Claude Code). The key finding: Claude Code's
-internal request timeout (~10-12 min) cannot be overridden and is incompatible
-with CPU prefill for its context size. Aider sidesteps this entirely.
+The Duo inference path took a full day of testing to land on Aider +
+Qwen2.5-Coder-3B + Vulkan. Models tried and rejected: Qwen2.5-Coder-7B
+(context too small), DeepSeek-Coder-V2-Lite (hallucinates tool calls),
+Qwen3.5-9B/4B/0.8B (CPU timeout or too small), Qwen3.5-4B on Vulkan (hybrid
+attention breaks KV cache reuse). Key findings: Claude Code's internal request
+timeout (~10-12 min) is incompatible with iGPU prefill for its context size;
+use `:server-vulkan` not `:server`; Qwen2.5 standard attention is required for
+cache reuse to work. Aider + Qwen2.5-Coder-3B + Vulkan is the result.
 
 Full investigative journal with the model-by-model failure analysis:
 [`docs/JOURNAL.md`](docs/JOURNAL.md)

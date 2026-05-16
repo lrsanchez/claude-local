@@ -1,11 +1,11 @@
 [Unit]
-Description=llama.cpp server (Qwen3.5-4B for Aider/light agentic, CPU prebuilt)
+Description=llama.cpp server (Qwen2.5-Coder-3B for Aider, Vulkan on Arc iGPU)
 After=network.target
 
 [Service]
 Type=simple
 ExecStartPre=-/usr/bin/podman rm -f llama-server
-ExecStart=/usr/bin/podman run --rm --name llama-server -p 127.0.0.1:8080:8080 -v /var/home/%u/models:/models:z ghcr.io/ggml-org/llama.cpp:server -m /models/qwen3.5-4b/Qwen3.5-4B-UD-Q4_K_XL.gguf --host 0.0.0.0 --port 8080 --alias qwen3.5-4b --parallel 1 -c 65536 -t 16 --jinja --reasoning off --temp 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5
+ExecStart=/usr/bin/podman run --rm --name llama-server --device /dev/dri -p 127.0.0.1:8080:8080 -v /var/home/%u/models:/models:z ghcr.io/ggml-org/llama.cpp:server-vulkan -m /models/qwen2.5-coder-3b/Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf --host 0.0.0.0 --port 8080 --alias qwen2.5-coder-3b -ngl 999 --parallel 1 -c 32768 --jinja --temp 0.7 --top-p 0.8 --top-k 20
 ExecStop=/usr/bin/podman stop -t 5 llama-server
 Restart=on-failure
 RestartSec=10

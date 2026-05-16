@@ -1,6 +1,6 @@
-# Day 1 War Stories — Zenbook Duo CPU Inference Testing
+# Day 1 War Stories — Zenbook Duo Inference Testing
 
-*A chronological account of the session that ended with Aider + Qwen3.5-4B.*
+*A chronological account of the session that ended with Aider + Qwen2.5-Coder-3B + Vulkan.*
 
 This journal captures the investigative journey so future readers don't repeat
 it. The main docs are the conclusion; this is how we got there.
@@ -120,9 +120,9 @@ The right fix: use a tool that injects less context.
 
 ---
 
-## The solution: Aider + Qwen3.5-4B
+## The intermediate solution: Aider + Qwen3.5-4B on CPU
 
-Aider comparison:
+Aider comparison at this stage:
 
 | | Claude Code | Aider |
 |---|---|---|
@@ -130,22 +130,65 @@ Aider comparison:
 | Memory injection | +10-20K (claude-mem) | None |
 | File context | Agent discovers automatically | User `/add`s explicitly |
 | First-message total | 30-55K tokens | 5-10K tokens |
-| Cold prefill at 37 t/s | 14-25 min | 2-4 min |
+| Cold prefill at 37 t/s (CPU) | 14-25 min | 2-4 min |
 | Internal timeout | ~10-12 min (hard) | None |
 
-First real test with Aider: worked on first try. Cold start in 2 minutes,
-follow-up in 45 seconds, diff format applied correctly without errors.
+First real test with Aider + Qwen3.5-4B on CPU: worked on first try. Cold
+start in 2 minutes, follow-up in 45 seconds, diff format applied correctly.
 
 Trade-off: less autonomy. You tell Aider which files to load; Claude Code
 discovers them itself. But "actually finishes" beats "autonomously hangs"
 every time.
 
+Good enough — but it turned out the Arc iGPU could do much better.
+
+---
+
+## Attempt 6: Vulkan on Arc iGPU
+
+With Aider confirmed working, the question became: can the Arc iGPU speed
+things up? The CPU setup was functional but cold starts were 2-4 minutes.
+
+Tried the plain `:server` image first with `-ngl 999` and `--device /dev/dri`.
+Server started, model loaded, but prefill was still 24-37 t/s — same as CPU.
+The plain `:server` image has no Vulkan compiled in. It runs CPU regardless
+of flags.
+
+Switched to `ghcr.io/ggml-org/llama.cpp:server-vulkan` — a completely
+different image. Added `--device /dev/dri -ngl 999`. Startup logs changed:
+
+```
+ggml_vulkan: Found 1 Vulkan devices
+Vulkan0 : Intel(R) Arc(tm) Graphics (MTL) (23576 MiB, 20354 MiB free)
+```
+
+The iGPU was reporting ~23 GB of addressable memory — because Meteor Lake's
+unified memory lets the GPU address most of system RAM. Not what was expected.
+
+Prefill speed with Qwen3.5-4B on Vulkan: ~120 t/s. Better, but the hybrid
+attention architecture (Gated DeltaNet) in Qwen3.5 was causing cache
+invalidation every turn — the server was re-prefilling from scratch on each
+Aider message instead of reusing the KV cache. That ate the speed gain.
+
+Switched to Qwen2.5-Coder-3B (standard multi-head attention). Cache reuse
+worked immediately. Prefill hit 260 t/s on a 4K-token cold start. Total time
+for first Aider response: ~25 seconds.
+
+**This was the real solution:**
+
+| Model | Backend | Prefill | Gen | Cold start | Notes |
+|---|---|---|---|---|---|
+| Qwen3.5-4B | CPU | 37 t/s | 10 t/s | 2-4 min | Functional |
+| Qwen3.5-4B | Vulkan | ~120 t/s | ~10 t/s | ~1 min | Cache invalidation kills it |
+| Qwen2.5-Coder-3B | Vulkan | ~260 t/s | ~12 t/s | ~25 sec | ✅ Daily driver |
+
 ---
 
 ## Lessons extracted
 
-1. **CPU prefill speed × context size × tool timeout = hard constraint.** Don't
-   try to break it; route around it. Use a tool with smaller context injection.
+1. **CPU/iGPU prefill speed × context size × tool timeout = hard constraint.**
+   Don't try to break it; route around it. Use a tool with smaller context
+   injection (Aider, not Claude Code).
 
 2. **Coder models ≠ agentic models.** DeepSeek-Coder-V2-Lite is trained for
    code completion, not tool-call execution. It hallucinates the API surface.
@@ -154,21 +197,34 @@ every time.
    only affects the HTTP client. The request lifecycle timeout is internal to
    Claude Code and cannot be extended from outside.
 
-4. **Qwen3.5 requires `--reasoning off` for CLI use.** Without it, the model
-   emits `<think>...</think>` reasoning blocks before every response. Aider
-   doesn't expect them and the interaction breaks down.
+4. **Use `server-vulkan`, not `server`.** Two distinct images. The plain
+   `:server` tag runs on CPU regardless of `-ngl` or `--device` flags.
 
-5. **Direct podman is simpler than distrobox for server workloads.** Distrobox
-   is designed for interactive containers with home directory access. A server
-   is a server; use podman directly.
+5. **Pass `--device /dev/dri` to podman.** Without it, the container can't
+   see the iGPU and silently runs on CPU. No warning in the logs.
 
-6. **SELinux `:z` flag is not optional on Bazzite.** The container silently
-   fails to read the model file without it — "Permission denied" in the logs
-   even though the host user owns the file.
+6. **Qwen3.5 hybrid attention breaks KV cache reuse.** The Gated DeltaNet
+   architecture causes llama.cpp to invalidate and re-prefill the KV cache
+   every turn. Defeats the prefill speedup. Use standard-attention models
+   (Qwen2.5, Llama) for Aider on iGPU.
 
-7. **Multi-line systemd `ExecStart` with `\` is fragile.** One trailing space
-   after a `\` breaks the unit entirely with `error: invalid argument: \`.
-   Use one long line.
+7. **Qwen3.5 requires `--reasoning off` for CLI use.** Without it, the model
+   emits `<think>...</think>` blocks before every response. Aider doesn't
+   expect them. (Moot if you avoid Qwen3.5 entirely, but worth knowing.)
+
+8. **Intel Arc iGPU can address ~23 GB of unified memory.** Don't assume
+   iGPU means memory-constrained. Bigger models fit than expected.
+
+9. **Direct podman is simpler than distrobox for server workloads.** Distrobox
+   is designed for interactive containers. A server is a server; use podman.
+
+10. **SELinux `:z` flag is not optional on Bazzite.** The container silently
+    fails to read the model file without it — "Permission denied" in the logs
+    even though the host user owns the file.
+
+11. **Multi-line systemd `ExecStart` with `\` is fragile.** One trailing space
+    after a `\` breaks the unit with `error: invalid argument: \`.
+    Use one long line.
 
 ---
 

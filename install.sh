@@ -90,7 +90,7 @@ if [[ "$MODE" != "bridge" ]]; then
     CONTAINER_IMAGE="docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2.3"
   else
     UNIT_SRC="./systemd/llama-server-duo.service"
-    MODEL_PATH="${HOME}/models/qwen3.5-4b/Qwen3.5-4B-UD-Q4_K_XL.gguf"
+    MODEL_PATH="${HOME}/models/qwen2.5-coder-3b/Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf"
   fi
 
   if [[ ! -f "$UNIT_SRC" ]]; then
@@ -154,14 +154,15 @@ if [[ "$MODE" != "bridge" ]]; then
       err "distrobox not installed"
     fi
   else
-    # Duo uses direct podman + official llama.cpp prebuilt image (not distrobox)
+    # Duo uses direct podman + server-vulkan image (NOT plain :server — that's CPU-only)
     if command -v podman >/dev/null 2>&1; then
       ok "podman available"
-      if podman image exists ghcr.io/ggml-org/llama.cpp:server 2>/dev/null; then
-        ok "llama.cpp server image pulled"
+      if podman image exists ghcr.io/ggml-org/llama.cpp:server-vulkan 2>/dev/null; then
+        ok "llama.cpp server-vulkan image pulled"
       else
-        warn "llama.cpp server image not yet pulled"
-        info "Run: podman pull ghcr.io/ggml-org/llama.cpp:server"
+        warn "llama.cpp server-vulkan image not yet pulled"
+        info "Run: podman pull ghcr.io/ggml-org/llama.cpp:server-vulkan"
+        info "(Use :server-vulkan, NOT :server — :server runs CPU-only)"
       fi
     else
       err "podman not installed"
@@ -178,8 +179,8 @@ if [[ "$MODE" != "bridge" ]]; then
       info "Run: hf download lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-GGUF \\"
       info "       --include \"*Q4_K_M*\" --local-dir ~/models/qwen3-coder-30b"
     else
-      info "Run: hf download unsloth/Qwen3.5-4B-GGUF \\"
-      info "       --include \"*UD-Q4_K_XL*\" --local-dir ~/models/qwen3.5-4b"
+      info "Run: hf download bartowski/Qwen2.5-Coder-3B-Instruct-GGUF \\"
+      info "       --include \"*Q4_K_M*\" --local-dir ~/models/qwen2.5-coder-3b"
     fi
   fi
 

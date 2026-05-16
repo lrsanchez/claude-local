@@ -1,8 +1,8 @@
-# Aider Setup for Zenbook Duo (Local Qwen3.5-4B)
+# Aider Setup for Zenbook Duo (Local Qwen2.5-Coder-3B + Vulkan)
 
 Aider is a terminal-based AI coding assistant. Unlike Claude Code, it injects
-only ~5-10K tokens of context per session — small enough for CPU prefill to
-complete in 2-4 minutes rather than timing out at 10-12 minutes.
+only ~5-10K tokens of context per session — small enough for the Arc iGPU to
+complete prefill in ~25 seconds rather than timing out after 10-12 minutes.
 
 This doc covers installing Aider and wiring it to the local llama-server on
 the Duo. For the server setup, see [`ZENBOOK-DUO.md`](ZENBOOK-DUO.md).
@@ -11,7 +11,7 @@ the Duo. For the server setup, see [`ZENBOOK-DUO.md`](ZENBOOK-DUO.md).
 
 ## Prerequisites
 
-- llama-server running locally on port 8080 with the `qwen3.5-4b` alias
+- llama-server running locally on port 8080 with the `qwen2.5-coder-3b` alias
 - `uv` Python toolchain manager (installed below)
 
 ---
@@ -55,8 +55,8 @@ Create `~/.aider.conf.yml`:
 ```yaml
 openai-api-base: http://127.0.0.1:8080/v1
 openai-api-key: local-no-auth-needed
-model: openai/qwen3.5-4b
-weak-model: openai/qwen3.5-4b
+model: openai/qwen2.5-coder-3b
+weak-model: openai/qwen2.5-coder-3b
 auto-commits: false
 dirty-commits: false
 edit-format: diff
@@ -66,13 +66,14 @@ edit-format: diff
 
 - `openai/` prefix — Aider treats llama.cpp's `/v1/chat/completions` as
   OpenAI-compatible. The prefix tells Aider which API format to use.
-- Model name `qwen3.5-4b` must exactly match the `--alias` flag passed to
-  llama-server in the systemd unit.
-- `weak-model: openai/qwen3.5-4b` — prevents Aider from calling the real
-  OpenAI API for cheap summarization tasks. Points it at the same local model.
-- `edit-format: diff` — works reliably with Qwen3.5-4B. If you switch to a
-  smaller model (e.g. 0.8B), use `edit-format: whole` (full-file replacement
-  is higher token cost but easier for small models to produce correctly).
+- Model name `qwen2.5-coder-3b` must exactly match the `--alias` flag passed
+  to llama-server in the systemd unit.
+- `weak-model: openai/qwen2.5-coder-3b` — prevents Aider from calling the
+  real OpenAI API for cheap summarization tasks. Points it at the same local
+  model.
+- `edit-format: diff` — works reliably with Qwen2.5-Coder-3B. If you switch
+  to a smaller model, try `edit-format: whole` (full-file replacement costs
+  more tokens but is easier for small models to produce correctly).
 - `auto-commits: false` — you review changes before they're committed.
 
 ---
@@ -83,14 +84,18 @@ Start the server if not already running:
 
 ```bash
 systemctl --user start llama-server.service
-sleep 30
+sleep 20
 ```
 
-Verify the model is loaded:
+Verify Vulkan is active and the model is loaded:
 
 ```bash
+journalctl --user -u llama-server --since "5 minutes ago" --no-pager \
+  | grep -iE "vulkan|ggml_vulkan"
+# Expected: Vulkan0 : Intel(R) Arc(tm) Graphics (MTL) (23576 MiB, ...)
+
 curl -s http://127.0.0.1:8080/v1/models | jq '.data[0].id'
-# Expected: "qwen3.5-4b"
+# Expected: "qwen2.5-coder-3b"
 ```
 
 Full end-to-end test:
@@ -103,8 +108,8 @@ aider README.md
 
 Type: `What does this file say?`
 
-You should see a response in 2-4 minutes on first cold start. Follow-ups
-will be faster (~30-60 sec) once the context is warm.
+You should see a response in ~25 seconds on first cold start. Follow-ups will
+be faster (~10-15 sec) once the KV cache is warm.
 
 ---
 
@@ -133,14 +138,31 @@ git commit -m "Handle missing keys in parse_config"
 **Key differences from Claude Code:**
 
 - You explicitly `/add` files instead of the agent discovering them. Keeps
-  context small, which is what makes CPU inference viable.
+  context small, which is what makes iGPU inference viable.
 - Aider produces diffs and applies them directly — no tool call loop.
 - No automatic git commits — you review and commit yourself (`auto-commits: false`).
 - Session context is bounded to what you `/add`, so it stays fast across turns.
 
 ---
 
-## 6. Updating Aider
+## 6. Useful Aider commands
+
+| Command | What it does |
+|---|---|
+| `/add <file>` | Add file to context mid-session |
+| `/drop <file>` | Remove file from context |
+| `/clear` | Clear context (use sparingly — kills warm cache) |
+| `/undo` | Undo last applied edit |
+| `/diff` | Review pending edits before accepting |
+| `aider --restore-chat-history` | Continue previous session |
+
+Chat history is saved as `.aider.chat.history.md` in the project root —
+readable markdown log of all sessions. Previous prompts are recalled with
+up-arrow (`.aider.input.history`).
+
+---
+
+## 7. Updating Aider
 
 ```bash
 uv tool upgrade aider-chat
@@ -148,5 +170,6 @@ uv tool upgrade aider-chat
 
 ---
 
-**See also:** [`ZENBOOK-DUO.md`](ZENBOOK-DUO.md) for the full server setup,
-model selection rationale, and the Claude Code timeout wall explanation.
+**See also:**
+- [`ZENBOOK-DUO.md`](ZENBOOK-DUO.md) — full server setup and model rationale
+- [`VULKAN-NOTES.md`](VULKAN-NOTES.md) — Arc iGPU gotchas and verification steps

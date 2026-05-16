@@ -1,150 +1,149 @@
 # Zenbook Duo (Core Ultra 9, 32 GB) — Bazzite Setup
 
-Companion setup to the PX13 runbook for a **CPU-class machine without a real
-GPU accelerator**. The Zenbook Duo has an Intel Core Ultra 9 185H with Arc
-integrated graphics — useful for display but not competitive with discrete
-GPUs or AMD APUs for LLM workloads.
+The Zenbook Duo has an Intel Core Ultra 9 185H with Arc integrated graphics.
+**The Arc iGPU is the inference backend here** — Vulkan puts it to work and
+delivers ~250 t/s prefill with Qwen2.5-Coder-3B. This is a capable local
+inference machine, not a "CPU fallback" box.
 
 **Three options for this machine, ordered by what you should actually use:**
 
-1. **[Tailscale bridge to PX13](TAILSCALE-BRIDGE.md)** — recommended for daily use.
-   Full 30B perf from anywhere with internet.
-2. **Local CPU inference with Aider** — covered here. Offline-capable backup, ~10 t/s gen.
-3. **Real Anthropic API via plain `claude`** — when online and not API-down.
+1. **[Tailscale bridge to PX13](TAILSCALE-BRIDGE.md)** — recommended for
+   internet-connected daily use. Full 30B perf from anywhere.
+2. **Local Vulkan inference with Aider** — covered here. Offline-capable,
+   snappy with the right setup (~25 sec first response).
+3. **Real Anthropic API via plain `claude`** — when online and not API-limited.
 
-This doc covers option 2 — the "I'm on a plane and the Anthropic API is also
-down somehow" tier. The actual working tool is **Aider + Qwen3.5-4B**, not
-Claude Code.
+This doc covers option 2. The working tool is **Aider + Qwen2.5-Coder-3B +
+Vulkan on Arc iGPU**, not Claude Code.
 
 > **Why not Claude Code locally?** Claude Code's internal request timeout
-> (~10-12 min) cannot be overridden by env vars. CPU prefill at 24-37 t/s
-> across Claude Code's 30-55K context injection takes 14-35 min — always
-> longer than the timeout. No model size fixes this. See
-> [The Claude Code timeout wall](#8-the-claude-code-timeout-wall) below.
+> (~10-12 min) can't be overridden via env vars. Even with the iGPU, Claude
+> Code's 30-55K context injection takes too long to prefill before the timeout
+> fires — and the tool retries indefinitely without ever generating output. See
+> [The Claude Code timeout wall](#8-the-claude-code-timeout-wall) for the full
+> analysis. Aider sidesteps this by injecting ~5-10K tokens instead.
 
 ---
 
-## Hardware tested
+## Hardware
 
-- **CPU**: Intel Core Ultra 9 185H (Meteor Lake) — AVX2 + VNNI, no AVX-512
-- **RAM**: 32 GB
-- **GPU**: Arc integrated (not used for inference)
+- **CPU**: Intel Core Ultra 9 185H (Meteor Lake) — AVX2 + AVX-VNNI
+- **iGPU**: Intel Arc Graphics (MTL) — used for inference via Vulkan
+- **RAM**: 32 GB DDR5 (unified, shared with iGPU)
 - **OS**: Bazzite (Fedora Atomic)
 
-**Note for Lunar Lake users** (Core Ultra 9 200V series): Intel stripped
-AVX-512 from those SKUs. The setup below uses the official prebuilt
-llama.cpp container which handles both — no special build flags needed.
+The Arc iGPU reports **~23 GB addressable "VRAM"** to llama.cpp — this is
+not a bug. Meteor Lake's unified memory architecture allows the iGPU to
+address most of system RAM. Bigger models than you'd expect fit comfortably.
 
 ---
 
-## The model: Qwen3.5-4B UD-Q4_K_XL
-
-After extensive testing (see [Models tested and verdict](#9-models-tested-and-verdict)),
-Qwen3.5-4B with Unsloth's Dynamic 2.0 quant is the right choice for Aider
-on the Duo:
+## The model: Qwen2.5-Coder-3B-Instruct Q4_K_M
 
 | Property | Value | Why it matters |
 |---|---|---|
-| Total params | 4B | Fits easily in 32 GB |
-| Quantization | UD-Q4_K_XL (Unsloth Dynamic 2.0) | Best quality at this size |
-| Native context | 128K | Plenty for Aider's ~5-10K injection |
-| Model weights | ~3 GB | Fast load, small RAM footprint |
-| KV cache at 64K | ~1.5 GB | Total runtime ~8-9 GB |
-| Generation speed | ~10 t/s | Follow-ups under 1 min |
+| Total params | 3B | Low RAM footprint, snappy on iGPU |
+| Quantization | Q4_K_M | Good quality/size trade-off |
+| Native context | 32K | Matches Aider's injection size exactly |
+| Model weights | ~1.9 GB | Fast model load |
+| Total runtime RAM | ~3-4 GB | Well within unified 32 GB |
+| Prefill speed | ~250 t/s | Cold start ~25 sec for a 4K-token turn |
+| Generation speed | ~12 t/s | Each response token streams in real time |
 
-**Why Aider and not Claude Code?** Aider injects only ~5-10K tokens of context
-per session vs 30-55K for Claude Code + claude-mem. Cold start: 2-4 min instead
-of 14-35 min that always exceeds Claude Code's timeout.
+**Why Aider and not Claude Code?** Aider injects ~5-10K context per session
+vs 30-55K for Claude Code. Aider's cold start: ~25 seconds. Claude Code's
+cold start would need ~4+ minutes just for prefill — and then times out before
+generating. See the [comparison table](#why-aider) below.
 
 ---
 
 ## 1. Bazzite setup
 
-No special kargs needed — CPU inference doesn't care about GTT or IOMMU.
+No special kernel args needed. The Vulkan setup uses `--device /dev/dri` via
+podman — no GPU kernel arguments, no IOMMU changes.
 
-Confirm your CPU's instruction set support (informational):
+Confirm your instruction set (informational):
 
 ```bash
 grep -oE "(avx[^ ]*|vnni[^ ]*)" /proc/cpuinfo | sort -u
 ```
 
-- **Meteor Lake & older**: shows `avx`, `avx2`, `avx_vnni`, often `avx512*`
-- **Lunar Lake (200V series)**: shows `avx`, `avx2`, `avx_vnni` (no AVX-512)
-
-The prebuilt container handles both — no manual flag tuning needed.
+Meteor Lake shows `avx`, `avx2`, `avx_vnni`. The prebuilt container handles
+this automatically — no manual flag tuning.
 
 ---
 
 ## 2. Model download
 
 ```bash
-hf download unsloth/Qwen3.5-4B-GGUF \
-  --include "*UD-Q4_K_XL*" \
-  --local-dir ~/models/qwen3.5-4b
+hf download bartowski/Qwen2.5-Coder-3B-Instruct-GGUF \
+  --include "*Q4_K_M*" \
+  --local-dir ~/models/qwen2.5-coder-3b
 ```
 
-About 3 GB. Verify when done:
+About 1.9 GB. Verify:
 
 ```bash
-ls -lh ~/models/qwen3.5-4b/
+ls -lh ~/models/qwen2.5-coder-3b/
+# Should see: Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf (~1.9 GB)
 ```
-
-You should see `Qwen3.5-4B-UD-Q4_K_XL.gguf` (~3 GB).
 
 ---
 
-## 3. The container — official llama.cpp prebuilt server image
+## 3. The container — `server-vulkan` image
 
-**Skip the build-from-source path.** Use the official prebuilt image instead.
-It tracks master HEAD, ships with the `/v1/messages` Anthropic Messages API
-endpoint, and includes x86 CPU optimizations out of the box.
-
-**Use direct podman, not distrobox.** Distrobox adds unnecessary complexity
-(seccomp, group passthrough, shell wrapping) for a server use case.
+**Use the `server-vulkan` tag, not plain `server`.** They are two distinct
+images. The plain `:server` tag runs on CPU even with `-ngl 999` and
+`--device /dev/dri`. Always use `:server-vulkan` explicitly.
 
 ```bash
-podman pull ghcr.io/ggml-org/llama.cpp:server
+podman pull ghcr.io/ggml-org/llama.cpp:server-vulkan
 ```
 
-About 200 MB. Done.
+About 300 MB.
 
-**Manual test first** (so you catch issues before wiring systemd):
+**Manual test first** (catch issues before wiring systemd):
 
 ```bash
 podman run --rm -it \
+  --device /dev/dri \
   -p 127.0.0.1:8080:8080 \
   -v /var/home/leandro/models:/models:z \
-  ghcr.io/ggml-org/llama.cpp:server \
-  -m /models/qwen3.5-4b/Qwen3.5-4B-UD-Q4_K_XL.gguf \
+  ghcr.io/ggml-org/llama.cpp:server-vulkan \
+  -m /models/qwen2.5-coder-3b/Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf \
   --host 0.0.0.0 --port 8080 \
-  --alias qwen3.5-4b \
-  -c 65536 --parallel 1 -t 16 --jinja \
-  --reasoning off --temp 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5
+  --alias qwen2.5-coder-3b \
+  -ngl 999 --parallel 1 -c 32768 --jinja \
+  --temp 0.7 --top-p 0.8 --top-k 20
 ```
 
-**Critical flag: `:z` on the volume mount.** Bazzite uses SELinux. Without
-`:z`, the container can't read the model file (you'll get "Permission denied"
-in the logs). The `:z` tells podman to relabel the directory for shared
-container access.
+**Critical flags:**
 
-**Qwen3.5 sampling flags explained:**
+- `--device /dev/dri` — without this, the container can't see the iGPU and
+  silently falls back to CPU.
+- `-ngl 999` — offloads all model layers to GPU. Without this flag, the model
+  runs on CPU even when Vulkan is detected.
+- `:z` on the volume mount — Bazzite uses SELinux. Without `:z`, the container
+  gets "Permission denied" reading the GGUF file even though the host user owns
+  it. See [`VULKAN-NOTES.md`](VULKAN-NOTES.md) for details.
 
-- `--reasoning off` — disables think-mode. Without this, the model emits
-  `<think>...</think>` blocks before every response. Aider doesn't expect them.
-- `--temp 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5` — Qwen's
-  official recommended non-thinking sampling parameters. Different from
-  Qwen2.5 or Qwen3-Coder defaults.
+**Expected startup log lines:**
 
-Watch for these in the startup logs:
-- `n_ctx = 65536` — 64K context loaded
-- `model size = 2.7 GiB` — weights in memory
-- `server is listening on http://0.0.0.0:8080` — the win condition
+```
+ggml_vulkan: Found 1 Vulkan devices
+Vulkan0 : Intel(R) Arc(tm) Graphics (MTL) (23576 MiB, 20354 MiB free)
+n_ctx = 32768
+model size = 1.9 GiB
+server is listening on http://0.0.0.0:8080
+```
+
+If the Vulkan lines are absent, see [Troubleshooting](#10-troubleshooting).
 
 Smoke test from another terminal:
 
 ```bash
 curl -s http://127.0.0.1:8080/v1/models | jq '.data[0].id'
-# Expected output: "qwen3.5-4b"
+# Expected: "qwen2.5-coder-3b"
 ```
 
 Then `Ctrl+C` the foreground run.
@@ -153,18 +152,19 @@ Then `Ctrl+C` the foreground run.
 
 ## 4. systemd user service
 
-Use the reference unit at [`../systemd/llama-server-duo.service`](../systemd/llama-server-duo.service),
+Use the reference unit at
+[`../systemd/llama-server-duo.service`](../systemd/llama-server-duo.service),
 or write it directly to `~/.config/systemd/user/llama-server.service`:
 
 ```ini
 [Unit]
-Description=llama.cpp server (Qwen3.5-4B for Aider/light agentic, CPU prebuilt)
+Description=llama.cpp server (Qwen2.5-Coder-3B for Aider, Vulkan on Arc iGPU)
 After=network.target
 
 [Service]
 Type=simple
 ExecStartPre=-/usr/bin/podman rm -f llama-server
-ExecStart=/usr/bin/podman run --rm --name llama-server -p 127.0.0.1:8080:8080 -v /var/home/%u/models:/models:z ghcr.io/ggml-org/llama.cpp:server -m /models/qwen3.5-4b/Qwen3.5-4B-UD-Q4_K_XL.gguf --host 0.0.0.0 --port 8080 --alias qwen3.5-4b --parallel 1 -c 65536 -t 16 --jinja --reasoning off --temp 1.0 --top-p 0.95 --top-k 20 --presence-penalty 1.5
+ExecStart=/usr/bin/podman run --rm --name llama-server --device /dev/dri -p 127.0.0.1:8080:8080 -v /var/home/%u/models:/models:z ghcr.io/ggml-org/llama.cpp:server-vulkan -m /models/qwen2.5-coder-3b/Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf --host 0.0.0.0 --port 8080 --alias qwen2.5-coder-3b -ngl 999 --parallel 1 -c 32768 --jinja --temp 0.7 --top-p 0.8 --top-k 20
 ExecStop=/usr/bin/podman stop -t 5 llama-server
 Restart=on-failure
 RestartSec=10
@@ -173,8 +173,8 @@ RestartSec=10
 WantedBy=default.target
 ```
 
-**Critical: use ONE long `ExecStart` line.** Any backslash continuation with
-a trailing space breaks systemd parsing with `error: invalid argument: \`.
+**Use ONE long `ExecStart` line.** Any backslash continuation with trailing
+whitespace breaks systemd with `error: invalid argument: \`.
 
 Install and start:
 
@@ -195,7 +195,7 @@ journalctl --user -u llama-server -f
 
 ## 5. Install Aider
 
-See [`AIDER-SETUP.md`](AIDER-SETUP.md) for the full installation steps. TL;DR:
+See [`AIDER-SETUP.md`](AIDER-SETUP.md) for full installation steps. TL;DR:
 
 ```bash
 # Install uv (Python toolchain manager)
@@ -211,12 +211,16 @@ Configure `~/.aider.conf.yml`:
 ```yaml
 openai-api-base: http://127.0.0.1:8080/v1
 openai-api-key: local-no-auth-needed
-model: openai/qwen3.5-4b
-weak-model: openai/qwen3.5-4b
+model: openai/qwen2.5-coder-3b
+weak-model: openai/qwen2.5-coder-3b
 auto-commits: false
 dirty-commits: false
 edit-format: diff
 ```
+
+The `openai/` prefix tells Aider to use OpenAI-compatible API format against
+llama.cpp's `/v1/chat/completions`. The model name must match the `--alias`
+flag in the systemd unit exactly.
 
 Then use it:
 
@@ -227,59 +231,69 @@ aider src/main.py
 
 ---
 
-## 6. Realistic performance expectations
+## 6. Performance expectations
 
-Measured on Duo with Core Ultra 9 185H, 32 GB RAM, this exact config:
+Measured on Duo with Core Ultra 9 185H, Arc iGPU, Vulkan, Qwen2.5-Coder-3B:
 
 | Action | Time |
 |---|---|
-| Model load (service start → ready) | 30-60 sec |
-| First message (cold, ~5-10K context) | 2-4 min |
-| Follow-up messages | Under 1 min |
-| Generation streaming | ~10 t/s |
-| System memory used | ~8-9 GB |
+| Model load (service start → ready) | 20-30 sec |
+| First message (cold, ~4K Aider context) | ~25 sec |
+| Follow-up messages (warm KV cache) | 10-20 sec |
+| Generation streaming | ~12 t/s |
+| System memory used | ~3-4 GB |
 
-**Be honest about the use case:**
+**What this setup handles well:**
 
-- ✅ Single-file edits, refactors, code explanation
+- ✅ Single-file edits and refactors
 - ✅ Multi-file work via explicit `/add` in Aider
-- ✅ Quick code questions
-- ✅ Truly offline scenarios (flights, conferences with no wifi)
-- ⚠️ Long Aider sessions slow down as context fills up over many turns
+- ✅ Code explanation and review
+- ✅ Offline use — flights, conferences, dead zones
+- ⚠️ Very long sessions slow down as context fills up over many turns
 - ❌ Real production work — use real `claude` or PX13 via Tailscale
-- ❌ Claude Code locally — it times out on CPU (see below)
+- ❌ Claude Code locally — it times out before generating (see below)
 
-**For this machine, prioritize:**
+**Priority order for this machine:**
 
 1. Real Claude API when online (primary)
-2. Tailscale to PX13 when reachable (full 30B at PX13 speeds, full Claude Code)
-3. Aider + local Qwen3.5-4B only when both above fail
-
-See [`TAILSCALE-BRIDGE.md`](TAILSCALE-BRIDGE.md) for option 2.
+2. Tailscale to PX13 when reachable — full 30B perf, full Claude Code
+3. Aider + local Qwen2.5-Coder-3B only when both above are unavailable
 
 ---
 
-## 7. Heat & battery
+## 7. Verify Vulkan is active
 
-CPU inference pegs ~16 cores at 100% for prefill + generation duration.
+After starting the service, confirm the iGPU is actually being used:
 
-- **Plugged in**: fans loud, chassis warm, ~50-65 W package power
-- **On battery**: thermal throttle within minutes, battery drains in
-  ~30-45 min under sustained load
+```bash
+journalctl --user -u llama-server --since "5 minutes ago" --no-pager \
+  | grep -iE "vulkan|ggml_vulkan"
+```
 
-Fire off a query, get an answer, let it cool. Don't run long autonomous Aider
-sessions on battery.
+Expected:
+
+```
+ggml_vulkan: Found 1 Vulkan devices
+Vulkan0 : Intel(R) Arc(tm) Graphics (MTL) (23576 MiB, 20354 MiB free)
+```
+
+If those lines don't appear, see [Troubleshooting](#10-troubleshooting).
+
+Speed heuristic: if prefill is 200+ t/s, Vulkan is working. If prefill is
+25-40 t/s, you fell back to CPU.
+
+See [`VULKAN-NOTES.md`](VULKAN-NOTES.md) for all Arc iGPU gotchas.
 
 ---
 
 ## 8. The Claude Code timeout wall
 
-Claude Code (the CLI from Anthropic) has internal request timeouts that
-abort backend requests after ~10-12 minutes even when:
-- `ANTHROPIC_API_TIMEOUT_MS=3600000` is set (1 hour)
-- The backend is actively processing and producing tokens
+Claude Code has internal request timeouts that abort backend requests after
+~10-12 minutes, even when:
+- `ANTHROPIC_API_TIMEOUT_MS=3600000` is set (env var only affects HTTP client)
+- The backend is actively prefilling and about to generate
 
-The log pattern when it hits:
+The failure pattern:
 
 ```
 W srv next: stopping wait for next result due to should_stop condition
@@ -287,36 +301,61 @@ W srv next: ref: https://github.com/ggml-org/llama.cpp/pull/22907
 W srv stop: cancel task, id_task = N
 ```
 
-Then Claude Code retries, gets a partial cache hit (~5-30% similarity),
-restarts prefill, hits the timeout again — infinite loop, model never generates.
+Claude Code retries, gets a partial cache hit (~5-30% overlap), restarts
+prefill from the cache boundary, times out again — infinite loop. The model
+never generates output.
 
-**This is fundamental.** CPU prefill cannot beat the timeout for Claude Code's
-context size. No model swap fixes this on CPU hardware:
+**Why the iGPU doesn't save you:**
 
-| Model | Prefill speed | Time for 50K tokens | Result |
+Claude Code injects 30-55K tokens of context on first message. At 100 t/s
+prefill (a realistic Arc iGPU estimate once KV cache grows), that's ~5-9
+minutes just for prefill. Add generation time and Claude Code's timeout fires
+reliably before the first response.
+
+| Model | Prefill speed | 50K tokens | Result |
 |---|---|---|---|
-| Qwen3.5-9B Q4_K_XL | 24 t/s | 35 min | Always times out |
-| Qwen3.5-4B Q4_K_XL | 37 t/s | 22 min | Always times out |
-| Qwen3.5-0.8B Q4_K_XL | 200 t/s | 4 min | Fast enough, but 0.8B quality is too low for reliable tool use |
+| Any model | ~100 t/s (iGPU) | ~8 min | Consistently times out |
+| Any model | ~24-37 t/s (CPU) | 22-35 min | Times out even faster |
 
-Either use a GPU machine (PX13), use Tailscale to one, or use a different
-tool (Aider) with smaller context injection.
+No model size fixes this on Duo hardware. The problem is Claude Code's context
+injection size × the timeout.
+
+**The answer:** use Aider (this doc) or Tailscale to PX13 instead.
+
+---
+
+<a name="why-aider"></a>
+## Why Aider works where Claude Code doesn't
+
+| Aspect | Claude Code | Aider |
+|---|---|---|
+| System prompt | ~15-25K tokens | ~3-5K tokens |
+| Memory injection (claude-mem) | +10-20K automatically | None |
+| File context model | Agent auto-discovers files | User `/add`s files explicitly |
+| Typical first-message context | 30-55K tokens | 5-10K tokens |
+| Prefill at 250 t/s | ~2-4 min (iGPU, borderline/over) | ~25 sec (snappy) |
+| Internal request timeout | ~10-12 min (hard, not overridable) | None |
+| Failure mode on small models | Refuses, hallucinates, narrates | Usually retries on bad diff |
+
+Aider trades autonomy for reliability. For iGPU-class hardware, that trade
+is the right one.
 
 ---
 
 ## 9. Models tested and verdict
 
-Full comparison from testing session, May 2026:
+Testing done May 2026 — full details in [`JOURNAL.md`](JOURNAL.md).
 
-| Model | Size | Result on Duo |
-|---|---|---|
-| Qwen2.5-Coder-7B Q4_K_M | 4.4 GB | ❌ 32K native context too small. First message always fails with "request exceeds available context size". |
-| Qwen2.5-Coder-14B | 8.4 GB | ❌ Same 32K context wall, slower than 7B. |
-| DeepSeek-Coder-V2-Lite Instruct (16B MoE) | 10 GB | ⚠️ 160K context fits, but hallucinates tool calls. Emits raw `<\|tool_calls_begin\|>` tokens in output. Refuses tasks with "I'm an AI and can't perform tasks on your behalf". Coder-trained, not agentic-trained. |
-| Qwen3.5-9B Q4_K_XL | 6 GB | ⚠️ Correct behavior, but 24 t/s prefill × 50K context = 35+ min. Claude Code timeout fires at ~10 min every time. |
-| Qwen3.5-4B Q4_K_XL | 3 GB | ⚠️ Better at 37 t/s, but 22 min for full Claude Code context. Times out same way. |
-| Qwen3.5-0.8B Q4_K_XL | 0.5 GB | ⚠️ Prefill at 200 t/s, fast enough to beat the timeout. But 0.8B quality is too low for reliable tool use — malformed JSON, hallucinated function names. |
-| **Qwen3.5-4B Q4_K_XL with Aider** | 3 GB | ✅ **Actually works.** Aider injects ~5-10K context. Cold start 2-4 min, follow-ups <1 min, ~10 t/s gen. Tool use reliable. |
+| Model | Size | Backend | Result |
+|---|---|---|---|
+| DeepSeek-Coder-V2-Lite Instruct (16B MoE) | 10 GB | CPU | ⚠️ Hallucinates tool calls, emits raw `<\|tool_calls_begin\|>` tokens. Coder-trained, not agentic-trained. |
+| Qwen2.5-Coder-7B Q4_K_M | 4.4 GB | CPU | ❌ 32K native context too small — Claude Code's first message exceeds it immediately. |
+| Qwen2.5-Coder-14B | 8.4 GB | CPU | ❌ Same 32K ceiling, slower. |
+| Qwen3.5-9B Q4_K_XL | 6 GB | CPU | ⚠️ Correct behavior, but 24 t/s × 50K tokens = 35 min. Times out every time. |
+| Qwen3.5-4B Q4_K_XL | 3 GB | CPU | ⚠️ 37 t/s, still ~22 min. Times out same way. |
+| Qwen3.5-0.8B Q4_K_XL | 0.5 GB | CPU | ⚠️ 200 t/s, beats the timeout. But output quality too low for reliable tool use. |
+| Llama-3.1-8B-Instruct | 4.6 GB | Vulkan | ⚠️ Worked. 128K native context, 12 t/s gen. But too slow on iGPU for snappy use, and Claude Code timeout still fires. |
+| **Qwen2.5-Coder-3B Q4_K_M + Vulkan + Aider** | 1.9 GB | Vulkan | ✅ **Daily driver.** Cache reuse works correctly. ~250 t/s prefill, ~12 t/s gen, ~25 sec cold start. |
 
 ---
 
@@ -324,14 +363,15 @@ Full comparison from testing session, May 2026:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Port 8080 already in use | Old llama-server still running | `systemctl --user stop llama-server.service`, `podman rm -f llama-server` |
+| No Vulkan lines in startup logs | Wrong image or missing `--device /dev/dri` | Check you're using `:server-vulkan`, not `:server`; confirm `--device /dev/dri` is in the run command |
+| Prefill speed is 25-40 t/s instead of 200+ | Vulkan fell back to CPU | See above |
 | Container can't read model | SELinux blocking volume mount | Add `:z` to the volume spec: `-v /path:/models:z` |
-| `error: invalid argument: \` | Trailing whitespace in systemd ExecStart continuation | Use one long ExecStart line, no `\` continuations |
-| OOM during load | RAM contention | Close browser/IDE; total footprint is ~8-9 GB |
-| Aider responses include `<think>` blocks | `--reasoning off` missing from llama-server flags | Restart server with `--reasoning off` in ExecStart |
+| `error: invalid argument: \` | Trailing whitespace after `\` in systemd ExecStart | Use one long ExecStart line, no `\` continuations |
+| Port 8080 already in use | Old llama-server still running | `systemctl --user stop llama-server.service && podman rm -f llama-server` |
+| OOM during load | Unlikely with 3B model, but possible if RAM is full | Close other apps; 3B should use ~3-4 GB total |
+| Context size exceeded | Using wrong model or `-c` value too low | Verify `--alias qwen2.5-coder-3b` and `-c 32768` in ExecStart |
+| Aider edit format errors | Model struggling with diff format | Try `edit-format: whole` in `~/.aider.conf.yml` |
 | `</s>` warning on model load | Harmless cosmetic noise | Ignore |
-| 404 on `/v1/messages` | Old llama.cpp build without Anthropic endpoint | Use official `ghcr.io/ggml-org/llama.cpp:server` prebuilt image |
-| Aider edit format errors | Model struggling with diff format | Switch to `edit-format: whole` in `~/.aider.conf.yml` |
 
 ---
 
