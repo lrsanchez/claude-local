@@ -90,9 +90,7 @@ if [[ "$MODE" != "bridge" ]]; then
     CONTAINER_IMAGE="docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2.3"
   else
     UNIT_SRC="./systemd/llama-server-duo.service"
-    MODEL_PATH="${HOME}/models/deepseek-coder-v2-lite/DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf"
-    CONTAINER_NAME="llama-cpu"
-    CONTAINER_IMAGE="quay.io/toolbx/fedora-toolbox:43"
+    MODEL_PATH="${HOME}/models/qwen3.5-4b/Qwen3.5-4B-UD-Q4_K_XL.gguf"
   fi
 
   if [[ ! -f "$UNIT_SRC" ]]; then
@@ -132,37 +130,42 @@ if [[ "$MODE" == "px13" ]]; then
 fi
 
 if [[ "$MODE" != "bridge" ]]; then
-  # Distrobox container
-  if command -v distrobox >/dev/null 2>&1; then
-    if distrobox list 2>/dev/null | grep -q "$CONTAINER_NAME"; then
-      ok "distrobox container '${CONTAINER_NAME}' exists"
-
-      if distrobox enter "$CONTAINER_NAME" -- which llama-server >/dev/null 2>&1; then
-        ok "llama-server binary present in container"
-      else
-        if [[ "$MODE" == "px13" ]]; then
+  # Container runtime check
+  if [[ "$MODE" == "px13" ]]; then
+    # PX13 uses distrobox + ROCm container
+    if command -v distrobox >/dev/null 2>&1; then
+      if distrobox list 2>/dev/null | grep -q "llama-rocm"; then
+        ok "distrobox container 'llama-rocm' exists"
+        if distrobox enter llama-rocm -- which llama-server >/dev/null 2>&1; then
+          ok "llama-server binary present in container"
+        else
           err "llama-server not found in container"
           info "The kyuz0 rocm-7.2.3 image should ship with it pre-built."
           info "Recreate the container with the image above."
-        else
-          err "llama-server not built in container"
-          info "See docs/ZENBOOK-DUO.md section 3 for build instructions"
         fi
+      else
+        err "distrobox container 'llama-rocm' not found"
+        info "Create it with:"
+        info "  distrobox create --name llama-rocm \\"
+        info "    --image docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2.3 \\"
+        info "    --additional-flags \"--device /dev/dri --device /dev/kfd --group-add video --group-add render --security-opt seccomp=unconfined\""
       fi
     else
-      err "distrobox container '${CONTAINER_NAME}' not found"
-      info "Create it with:"
-      if [[ "$MODE" == "px13" ]]; then
-        info "  distrobox create --name ${CONTAINER_NAME} \\"
-        info "    --image ${CONTAINER_IMAGE} \\"
-        info "    --additional-flags \"--device /dev/dri --device /dev/kfd --group-add video --group-add render --security-opt seccomp=unconfined\""
-      else
-        info "  distrobox create --name ${CONTAINER_NAME} --image ${CONTAINER_IMAGE}"
-        info "  Then see docs/ZENBOOK-DUO.md for the llama.cpp build inside it"
-      fi
+      err "distrobox not installed"
     fi
   else
-    err "distrobox not installed"
+    # Duo uses direct podman + official llama.cpp prebuilt image (not distrobox)
+    if command -v podman >/dev/null 2>&1; then
+      ok "podman available"
+      if podman image exists ghcr.io/ggml-org/llama.cpp:server 2>/dev/null; then
+        ok "llama.cpp server image pulled"
+      else
+        warn "llama.cpp server image not yet pulled"
+        info "Run: podman pull ghcr.io/ggml-org/llama.cpp:server"
+      fi
+    else
+      err "podman not installed"
+    fi
   fi
 
   # Model file
@@ -175,8 +178,8 @@ if [[ "$MODE" != "bridge" ]]; then
       info "Run: hf download lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-GGUF \\"
       info "       --include \"*Q4_K_M*\" --local-dir ~/models/qwen3-coder-30b"
     else
-      info "Run: hf download bartowski/Qwen2.5-Coder-7B-Instruct-GGUF \\"
-      info "       --include \"*Q4_K_M*\" --local-dir ~/models/qwen2.5-coder-7b"
+      info "Run: hf download unsloth/Qwen3.5-4B-GGUF \\"
+      info "       --include \"*UD-Q4_K_XL*\" --local-dir ~/models/qwen3.5-4b"
     fi
   fi
 
