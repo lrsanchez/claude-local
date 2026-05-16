@@ -67,15 +67,17 @@ hf download bartowski/Qwen2.5-Coder-14B-Instruct-GGUF \
 
 No special kargs needed — CPU inference doesn't care about GTT.
 
-Confirm AVX-512 is available on your specific Core Ultra variant:
+Check what your CPU supports (cosmetic — `-DGGML_NATIVE=ON` in the build
+step below handles either case automatically):
 
 ```bash
-grep -o "avx512[^ ]*" /proc/cpuinfo | sort -u
-# Should show: avx512f, avx512vnni, avx512bf16, etc.
+grep -oE "(avx[^ ]*|vnni[^ ]*)" /proc/cpuinfo | sort -u
 ```
 
-If `avx512f` is missing, you have a different CPU than expected — adjust
-build flags below accordingly (`-DGGML_AVX2=ON` minimum).
+- **Meteor Lake & older**: you'll see `avx512f`, `avx512vnni`, `avx512bf16`, etc.
+- **Lunar Lake (Core Ultra 9 200V series)**: AVX-512 was stripped. You'll see
+  `avx`, `avx2`, `avx_vnni`. Still fully functional, ~25% slower for
+  inference than AVX-512.
 
 ---
 
@@ -101,21 +103,24 @@ cd ~
 git clone https://github.com/ggml-org/llama.cpp.git
 cd llama.cpp
 
+# -DGGML_NATIVE=ON lets the compiler use whatever instructions your CPU
+# actually supports. Works on Lunar Lake (AVX2 + VNNI), Meteor Lake
+# (AVX-512), and older Intel/AMD chips alike. Don't hardcode AVX-512
+# flags — Intel stripped them from Lunar Lake Core Ultra 9 SKUs and
+# explicit flags fail to compile there.
 cmake -B build -S . \
   -DGGML_NATIVE=ON \
-  -DGGML_AVX512=ON \
-  -DGGML_AVX512_VBMI=ON \
-  -DGGML_AVX512_VNNI=ON \
-  -DGGML_AVX512_BF16=ON \
   -DCMAKE_BUILD_TYPE=Release
 
 cmake --build build --config Release -j$(nproc)
 exit
 ```
 
-`-DGGML_NATIVE=ON` lets the compiler pick the best instructions available on
-the host CPU. The explicit AVX-512 flags ensure llama.cpp builds with the
-fastest paths for your chip.
+`-DGGML_NATIVE=ON` tells the compiler to use every instruction the host
+CPU supports. On Meteor Lake you get AVX-512 paths automatically; on
+Lunar Lake (where Intel removed AVX-512) you get AVX2 + VNNI instead.
+The latter is about 25% slower than AVX-512 for INT8 inference but
+still completely usable for Qwen2.5-Coder-7B at Q4.
 
 Build takes ~10 minutes.
 
@@ -263,4 +268,4 @@ cmake -B build -S . \
   -DCMAKE_BUILD_TYPE=Release
 ```
 
-For Intel-class hardware in 2026, CPU with AVX-512 is the pragmatic path.
+For Intel-class hardware in 2026, CPU inference (AVX2 + VNNI or AVX-512 where available) is the pragmatic path.
